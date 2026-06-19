@@ -25,7 +25,7 @@ async function boot() {
   ]);
   renderNav();
   window.addEventListener("hashchange", route);
-  if (!location.hash) location.hash = "#/dashboard";
+  if (!location.hash) location.hash = "#/consolidado/dashboard";
   route();
 }
 
@@ -53,24 +53,43 @@ async function logout() {
   location.reload();
 }
 
+const SECOES = [
+  ["dashboard", "Dashboard", "📈"],
+  ["lancamentos", "Lançamentos", "💸"],
+  ["caixa", "Caixa e Bancos", "🏦"],
+  ["pagar", "Contas a Pagar", "📕"],
+  ["receber", "Contas a Receber", "📗"],
+  ["relatorios", "Relatórios", "📑"],
+];
+
 function renderNav() {
-  const empresasLinks = STATE.empresas.filter((e) => e.tipo !== "grupo")
-    .map((e) => `<a href="#/empresa/${e.id}" data-route="empresa/${e.id}"><span class="dot" style="background:${e.cor || '#888'}"></span>${e.nome}</a>`).join("");
+  const h = location.hash.replace(/^#\//, "");
+  const activeEmp = h.startsWith("empresa/") ? h.split("/")[1] : null;
+  const empresasHtml = STATE.empresas.filter((e) => e.tipo !== "grupo").map((e) => {
+    const open = String(e.id) === activeEmp;
+    const subs = SECOES.map((s) => `<a href="#/empresa/${e.id}/${s[0]}" data-route="empresa/${e.id}/${s[0]}">${s[2]} ${s[1]}</a>`).join("");
+    return `<div class="nav-emp">
+      <div class="nav-emp-head ${open ? "open" : ""}" data-emp="${e.id}"><span class="dot" style="background:${e.cor || "#888"}"></span><span class="nm">${e.nome}</span><span class="caret">${open ? "▾" : "▸"}</span></div>
+      <div class="nav-emp-sub" data-sub="${e.id}" style="display:${open ? "block" : "none"}">${subs}</div>
+    </div>`;
+  }).join("");
   $("#nav").innerHTML = `
-    <a href="#/dashboard" data-route="dashboard">📈 Dashboard Geral</a>
-    <a href="#/lancamentos" data-route="lancamentos">💸 Lançamentos</a>
-    <div class="nav-group">Financeiro</div>
-    <a href="#/caixa" data-route="caixa">🏦 Caixa e Bancos</a>
-    <a href="#/pagar" data-route="pagar">📕 Contas a Pagar</a>
-    <a href="#/receber" data-route="receber">📗 Contas a Receber</a>
-    <a href="#/relatorios" data-route="relatorios">📑 Relatórios</a>
+    <div class="nav-group">Grupo RICCI</div>
+    <a href="#/consolidado/dashboard" data-route="consolidado/dashboard">🏠 Dashboard Consolidado</a>
+    <a href="#/consolidado/relatorios" data-route="consolidado/relatorios">📊 Relatórios do Grupo</a>
     <div class="nav-group">Empresas / Frentes</div>
-    ${empresasLinks}
+    ${empresasHtml}
     <div class="nav-group">Administração</div>
     <a href="#/cadastros" data-route="cadastros">⚙️ Cadastros</a>
     <div class="nav-group">${STATE.usuario ? STATE.usuario.nome : ""}</div>
     <a href="#" id="navLogout">🚪 Sair</a>
   `;
+  document.querySelectorAll(".nav-emp-head").forEach((hd) => hd.addEventListener("click", () => {
+    const sub = document.querySelector(`[data-sub="${hd.dataset.emp}"]`);
+    const vis = sub.style.display !== "none";
+    sub.style.display = vis ? "none" : "block";
+    hd.querySelector(".caret").textContent = vis ? "▸" : "▾";
+  }));
   const lo = document.getElementById("navLogout");
   if (lo) lo.addEventListener("click", (e) => { e.preventDefault(); logout(); });
 }
@@ -79,17 +98,26 @@ function setActive(route) {
 }
 
 function route() {
-  const h = location.hash.replace(/^#\//, "");
+  const h = location.hash.replace(/^#\//, "") || "consolidado/dashboard";
   clearCharts();
-  if (h === "dashboard") return viewDashboard();
-  if (h === "lancamentos") return viewLancamentos();
-  if (h === "caixa") return viewCaixa();
-  if (h === "pagar") return viewContasStatus("saida");
-  if (h === "receber") return viewContasStatus("entrada");
-  if (h === "relatorios") return viewRelatorios();
+  renderNav();
+  setActive(h);
+  const p = h.split("/");
+  if (p[0] === "consolidado") {
+    if (p[1] === "relatorios") return viewRelatorios(null);
+    return viewConsolidado();
+  }
+  if (p[0] === "empresa") {
+    const id = Number(p[1]); const sec = p[2] || "dashboard";
+    if (sec === "lancamentos") return viewLancamentos(id);
+    if (sec === "caixa") return viewCaixa(id);
+    if (sec === "pagar") return viewContasStatus("saida", id);
+    if (sec === "receber") return viewContasStatus("entrada", id);
+    if (sec === "relatorios") return viewRelatorios(id);
+    return viewEmpresa(id);
+  }
   if (h === "cadastros") return viewCadastros();
-  if (h.startsWith("empresa/")) return viewEmpresa(Number(h.split("/")[1]));
-  viewDashboard();
+  viewConsolidado();
 }
 
 function anoSelector(anos, anoAtual, onChange) {
@@ -98,21 +126,22 @@ function anoSelector(anos, anoAtual, onChange) {
   return sel;
 }
 
-/* ====================== DASHBOARD GERAL ====================== */
-async function viewDashboard(ano) {
-  setActive("dashboard"); clearCharts();
+/* ====================== DASHBOARD CONSOLIDADO ====================== */
+async function viewConsolidado(ano) {
+  clearCharts();
   const view = $("#view");
   view.innerHTML = "Carregando…";
   const d = await api("/api/dashboard" + (ano ? "?ano=" + ano : ""));
   STATE.anoSel = d.ano;
   view.innerHTML = "";
-  const top = el(`<div class="topbar"><div><h1>Dashboard Geral — Grupo RICCI</h1>
-    <div class="sub">Visão consolidada · ${d.kpis.faturamento ? "" : "sem dados no ano"}</div></div></div>`);
+  const top = el(`<div class="topbar"><div><h1>Dashboard Consolidado — Grupo RICCI</h1>
+    <div class="sub">Visão consolidada de todas as frentes · ${d.kpis.faturamento ? "" : "sem dados no ano"}</div></div></div>`);
   const right = el(`<div style="display:flex;gap:10px;align-items:center"></div>`);
-  right.append(el(`<span class="sub">Ano:</span>`), anoSelector(d.anos, d.ano, (a) => viewDashboard(a)),
-    el(`<button class="btn primary" onclick="location.hash='#/lancamentos'">+ Lançamento</button>`));
+  right.append(el(`<span class="sub">Ano:</span>`), anoSelector(d.anos, d.ano, (a) => viewConsolidado(a)),
+    el(`<button class="btn primary" id="btnNovoLanc">+ Lançamento</button>`));
   top.append(right);
   view.append(top);
+  right.querySelector("#btnNovoLanc").addEventListener("click", () => openLancModal({}, () => viewConsolidado(d.ano)));
 
   view.append(el(`<div class="note">Consolidado operacional exclui <b>Família</b> (distribuição compulsória).
     A <b>Agência dos Correios</b> aparece pelos valores que entram no Grupo; a visão 100%/40% está no card da Agência abaixo e na página da empresa.</div>`));
@@ -148,7 +177,7 @@ async function viewDashboard(ano) {
 
   $("#tEmp").innerHTML = `<thead><tr><th>Empresa</th><th>Faturamento</th><th>Despesa</th><th>Resultado</th><th>Part.</th></tr></thead>
     <tbody>${d.porEmpresa.map((e) => `<tr>
-      <td><a href="#/empresa/${e.id}">${e.nome}</a> ${e.consolida ? "" : '<span class="pill amber">não consolida</span>'}</td>
+      <td><a href="#/empresa/${e.id}/dashboard">${e.nome}</a> ${e.consolida ? "" : '<span class="pill amber">não consolida</span>'}</td>
       <td>${BRL(e.faturamento)}</td><td>${BRL(e.despesa)}</td>
       <td class="${e.resultado>=0?'pos':'neg'}">${BRL(e.resultado)}</td>
       <td>${e.part}%</td></tr>`).join("")}</tbody>`;
@@ -181,7 +210,7 @@ function renderAgf(box, agf) {
 
 /* ====================== EMPRESA ====================== */
 async function viewEmpresa(id, ano) {
-  setActive("empresa/" + id); clearCharts();
+  clearCharts();
   const view = $("#view"); view.innerHTML = "Carregando…";
   const d = await api(`/api/empresa/${id}/dashboard` + (ano ? "?ano=" + ano : ""));
   if (d.error) { view.innerHTML = "Empresa não encontrada."; return; }
@@ -227,28 +256,27 @@ async function viewEmpresa(id, ano) {
 }
 
 /* ====================== LANÇAMENTOS ====================== */
-async function viewLancamentos() {
-  setActive("lancamentos");
+async function viewLancamentos(empresaId) {
   const view = $("#view"); view.innerHTML = "";
+  const emp = STATE.empresas.find((e) => e.id === empresaId);
   const anos = (await api("/api/dashboard")).anos;
-  view.append(el(`<div class="topbar"><div><h1>Lançamentos</h1><div class="sub">Entradas, saídas e transferências</div></div></div>`));
+  view.append(el(`<div class="topbar"><div><h1>Lançamentos — ${emp ? emp.nome : ""}</h1><div class="sub">Entradas, saídas e transferências desta empresa</div></div></div>`));
 
   const tb = el(`<div class="toolbar"></div>`);
-  const fEmp = el(`<label class="fld">Empresa<select id="fEmp"><option value="">Todas</option>${STATE.empresas.filter((e)=>e.tipo!=='grupo').map((e)=>`<option value="${e.id}">${e.nome}</option>`).join("")}</select></label>`);
   const fAno = el(`<label class="fld">Ano<select id="fAno"><option value="">Todos</option>${anos.map((a)=>`<option>${a}</option>`).join("")}</select></label>`);
   const fTipo = el(`<label class="fld">Tipo<select id="fTipo"><option value="">Todos</option><option value="entrada">Entrada</option><option value="saida">Saída</option><option value="transferencia">Transferência</option></select></label>`);
   const fQ = el(`<label class="fld">Busca<input id="fQ" placeholder="descrição…"></label>`);
   const btnE = el(`<button class="btn green">+ Entrada</button>`);
   const btnS = el(`<button class="btn red" style="border-color:var(--red)">+ Saída</button>`);
   const btnT = el(`<button class="btn">⇄ Transferência</button>`);
-  tb.append(fEmp, fAno, fTipo, fQ, btnE, btnS, btnT);
+  tb.append(fAno, fTipo, fQ, btnE, btnS, btnT);
   view.append(tb);
   const tableCard = el(`<div class="card"><div class="scroll"><table id="tLanc"></table></div></div>`);
   view.append(tableCard);
 
   async function load() {
     const p = new URLSearchParams();
-    if ($("#fEmp").value) p.set("empresa_id", $("#fEmp").value);
+    p.set("empresa_id", empresaId);
     if ($("#fAno").value) p.set("ano", $("#fAno").value);
     if ($("#fTipo").value) p.set("tipo", $("#fTipo").value);
     if ($("#fQ").value) p.set("q", $("#fQ").value);
@@ -271,11 +299,11 @@ async function viewLancamentos() {
       if (confirm("Excluir este lançamento?")) { await fetch("/api/lancamentos/" + b.dataset.del, { method: "DELETE" }); load(); }
     }));
   }
-  [fEmp, fAno, fTipo].forEach((f) => f.querySelector("select").addEventListener("change", load));
+  [fAno, fTipo].forEach((f) => f.querySelector("select").addEventListener("change", load));
   fQ.querySelector("input").addEventListener("input", () => { clearTimeout(window._t); window._t = setTimeout(load, 300); });
-  btnE.addEventListener("click", () => openLancModal({ tipo: "entrada" }, load));
-  btnS.addEventListener("click", () => openLancModal({ tipo: "saida" }, load));
-  btnT.addEventListener("click", () => openLancModal({ tipo: "transferencia" }, load));
+  btnE.addEventListener("click", () => openLancModal({ tipo: "entrada", empresa_id: empresaId }, load));
+  btnS.addEventListener("click", () => openLancModal({ tipo: "saida", empresa_id: empresaId }, load));
+  btnT.addEventListener("click", () => openLancModal({ tipo: "transferencia", empresa_id: empresaId }, load));
   load();
 }
 
@@ -357,18 +385,19 @@ function openLancModal(data, onSaved) {
 }
 
 /* ====================== CAIXA E BANCOS ====================== */
-async function viewCaixa() {
-  setActive("caixa");
+async function viewCaixa(empresaId) {
   const view = $("#view"); view.innerHTML = "Carregando…";
-  const saldos = await api("/api/contas/saldos");
+  const emp = STATE.empresas.find((e) => e.id === empresaId);
+  const saldos = await api("/api/contas/saldos?empresa_id=" + empresaId);
   view.innerHTML = "";
-  const top = el(`<div class="topbar"><div><h1>Caixa e Bancos</h1><div class="sub">Saldos por conta e movimentações</div></div></div>`);
+  const top = el(`<div class="topbar"><div><h1>Caixa e Bancos — ${emp ? emp.nome : ""}</h1><div class="sub">Saldos por conta e movimentações</div></div></div>`);
   const right = el(`<div style="display:flex;gap:10px"></div>`);
   const bTransf = el(`<button class="btn">⇄ Transferência</button>`);
   const bNova = el(`<button class="btn primary">+ Conta</button>`);
   right.append(bTransf, bNova); top.append(right); view.append(top);
-  bTransf.addEventListener("click", () => openLancModal({ tipo: "transferencia" }, viewCaixa));
-  bNova.addEventListener("click", () => openContaModal(null, viewCaixa));
+  const refresh = () => viewCaixa(empresaId);
+  bTransf.addEventListener("click", () => openLancModal({ tipo: "transferencia", empresa_id: empresaId }, refresh));
+  bNova.addEventListener("click", () => openContaModal({ empresa_id: empresaId }, refresh));
 
   const totalCaixa = saldos.reduce((s, c) => s + (c.saldo || 0), 0);
   view.append(el(`<div class="kpis">${kpi("Saldo total (contas ativas)", BRL(totalCaixa), saldos.length + " contas")}</div>`));
@@ -389,7 +418,7 @@ async function viewCaixa() {
   }
   view.append(cards);
   cards.querySelectorAll("[data-extrato]").forEach((b) => b.addEventListener("click", () => openExtrato(b.dataset.extrato, saldos.find((x) => x.id == b.dataset.extrato))));
-  cards.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openContaModal(saldos.find((x) => x.id == b.dataset.edit), viewCaixa)));
+  cards.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openContaModal(saldos.find((x) => x.id == b.dataset.edit), refresh)));
 }
 
 async function openExtrato(id, conta) {
@@ -441,19 +470,20 @@ function openContaModal(data, onSaved) {
 }
 
 /* ============ CONTAS A PAGAR / RECEBER ============ */
-async function viewContasStatus(tipo) {
+async function viewContasStatus(tipo, empresaId) {
   const ehPagar = tipo === "saida";
-  setActive(ehPagar ? "pagar" : "receber");
   const view = $("#view"); view.innerHTML = "Carregando…";
+  const emp = STATE.empresas.find((e) => e.id === empresaId);
+  const refresh = () => viewContasStatus(tipo, empresaId);
   // pendentes/atrasados do tipo, ordenados por vencimento
-  const rows = (await api(`/api/lancamentos?tipo=${tipo}&origem=manual&limit=1000`))
+  const rows = (await api(`/api/lancamentos?tipo=${tipo}&empresa_id=${empresaId}&limit=1000`))
     .filter((r) => ["pendente", "atrasado"].includes(r.status));
   view.innerHTML = "";
   const titulo = ehPagar ? "Contas a Pagar" : "Contas a Receber";
-  const top = el(`<div class="topbar"><div><h1>${titulo}</h1><div class="sub">Lançamentos ${ehPagar?"a pagar":"a receber"} pendentes</div></div></div>`);
+  const top = el(`<div class="topbar"><div><h1>${titulo} — ${emp ? emp.nome : ""}</h1><div class="sub">Lançamentos ${ehPagar?"a pagar":"a receber"} pendentes</div></div></div>`);
   const bNovo = el(`<button class="btn ${ehPagar?'red':'green'}" style="${ehPagar?'border-color:var(--red)':''}">+ ${ehPagar?'Conta a pagar':'Conta a receber'}</button>`);
   top.append(bNovo); view.append(top);
-  bNovo.addEventListener("click", () => openLancModal({ tipo, status: "pendente" }, () => viewContasStatus(tipo)));
+  bNovo.addEventListener("click", () => openLancModal({ tipo, status: "pendente", empresa_id: empresaId }, refresh));
 
   const total = rows.reduce((s, r) => s + (r.valor_liquido || 0), 0);
   view.append(el(`<div class="kpis">${kpi("Total " + (ehPagar?"a pagar":"a receber"), BRL(total), rows.length + " títulos")}</div>`));
@@ -471,20 +501,20 @@ async function viewContasStatus(tipo) {
       || `<tr><td colspan=7 class="sub">Nenhum título pendente.</td></tr>`}</tbody>`;
   $("#t").querySelectorAll("[data-baixar]").forEach((b) => b.addEventListener("click", async () => {
     await fetch(`/api/lancamentos/${b.dataset.baixar}/baixar`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: ehPagar ? "pago" : "recebido" }) });
-    viewContasStatus(tipo);
+    refresh();
   }));
-  $("#t").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openLancModal(rows.find((x) => x.id == b.dataset.edit), () => viewContasStatus(tipo))));
+  $("#t").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openLancModal(rows.find((x) => x.id == b.dataset.edit), refresh)));
 }
 
 /* ====================== RELATÓRIOS ====================== */
-async function viewRelatorios(ano) {
-  setActive("relatorios");
+async function viewRelatorios(empresaId, ano) {
+  if (empresaId) return viewRelatorioEmpresa(empresaId, ano);
   const view = $("#view"); view.innerHTML = "Carregando…";
   const d = await api("/api/dashboard" + (ano ? "?ano=" + ano : ""));
   view.innerHTML = "";
-  const top = el(`<div class="topbar"><div><h1>Relatórios</h1><div class="sub">DRE por empresa, consolidado e evolução</div></div></div>`);
+  const top = el(`<div class="topbar"><div><h1>Relatórios do Grupo</h1><div class="sub">DRE consolidado, resultado por empresa e evolução</div></div></div>`);
   const right = el(`<div style="display:flex;gap:10px;align-items:center"></div>`);
-  right.append(el(`<span class="sub">Ano:</span>`), anoSelector(d.anos, d.ano, (a) => viewRelatorios(a)));
+  right.append(el(`<span class="sub">Ano:</span>`), anoSelector(d.anos, d.ano, (a) => viewRelatorios(null, a)));
   top.append(right); view.append(top);
 
   // DRE consolidado simples
@@ -515,17 +545,56 @@ async function viewRelatorios(ano) {
   view.append(evCard);
 }
 
+async function viewRelatorioEmpresa(empresaId, ano) {
+  const view = $("#view"); view.innerHTML = "Carregando…";
+  const d = await api(`/api/empresa/${empresaId}/dashboard` + (ano ? "?ano=" + ano : ""));
+  view.innerHTML = "";
+  const e = d.empresa, k = d.kpis;
+  const top = el(`<div class="topbar"><div><h1>Relatórios — ${e.nome}</h1><div class="sub">DRE da empresa${e.percentual_participacao < 100 ? ` · participação do Grupo ${e.percentual_participacao}%` : ""}</div></div></div>`);
+  const right = el(`<div style="display:flex;gap:10px;align-items:center"></div>`);
+  right.append(el(`<span class="sub">Ano:</span>`), anoSelector(d.anos, d.ano, (a) => viewRelatorios(empresaId, a)));
+  top.append(right); view.append(top);
+
+  view.append(el(`<div class="card" style="margin-bottom:18px"><h2>DRE ${e.nome} — ${d.ano}</h2>
+    <table><tbody>
+      <tr><td>(+) Receitas</td><td class="pos">${BRL2(k.faturamento)}</td></tr>
+      <tr><td>(−) Despesas</td><td class="neg">${BRL2(k.despesa)}</td></tr>
+      <tr class="total"><td>(=) Resultado</td><td class="${k.resultado >= 0 ? "pos" : "neg"}">${BRL2(k.resultado)}</td></tr>
+      ${e.percentual_participacao < 100 ? `<tr><td>(×) Atribuível ao Grupo (${e.percentual_participacao}%)</td><td>${BRL2(k.resultadoAtribuivel)}</td></tr>` : ""}
+    </tbody></table></div>`));
+
+  const catTbl = (titulo, arr) => `<div class="card" style="margin-bottom:18px"><h2>${titulo}</h2><table><tbody>${
+    arr.filter((c) => c.total > 0).map((c) => `<tr><td>${c.nome}</td><td>${BRL2(c.total)}</td></tr>`).join("") || '<tr><td class="sub">sem dados</td></tr>'}</tbody></table></div>`;
+  view.append(el(catTbl("Receitas por categoria", d.porCategoriaReceita)));
+  view.append(el(catTbl("Despesas por categoria", d.porCategoriaDespesa)));
+  if (d.porUnidade && d.porUnidade.length)
+    view.append(el(`<div class="card"><h2>Por unidade</h2><table><thead><tr><th>Unidade</th><th>Receita</th><th>Despesa</th></tr></thead><tbody>${
+      d.porUnidade.map((u) => `<tr><td>${u.nome}</td><td>${BRL(u.faturamento)}</td><td>${BRL(u.despesa)}</td></tr>`).join("")}</tbody></table></div>`));
+}
+
 /* ====================== CADASTROS ====================== */
 async function viewCadastros() {
-  setActive("cadastros");
-  const view = $("#view"); view.innerHTML = "";
-  const top = el(`<div class="topbar"><div><h1>Cadastros</h1><div class="sub">Estrutura do sistema</div></div></div>`);
+  const view = $("#view"); view.innerHTML = "Carregando…";
+  const usuarios = await api("/api/usuarios");
+  view.innerHTML = "";
+  const top = el(`<div class="topbar"><div><h1>Cadastros</h1><div class="sub">Estrutura do sistema e usuários</div></div></div>`);
   const acts = el(`<div style="display:flex;gap:8px;flex-wrap:wrap"></div>`);
+  const bUsuario = el(`<button class="btn primary">+ Usuário</button>`);
   const bConta = el(`<button class="btn">+ Conta</button>`);
   const bCat = el(`<button class="btn">+ Categoria</button>`);
   const bCentro = el(`<button class="btn">+ Centro de custo</button>`);
   const bPessoa = el(`<button class="btn">+ Pessoa</button>`);
-  acts.append(bConta, bCat, bCentro, bPessoa); top.append(acts); view.append(top);
+  acts.append(bUsuario, bConta, bCat, bCentro, bPessoa); top.append(acts); view.append(top);
+  bUsuario.addEventListener("click", () => openSimpleModal("Novo usuário", [
+    { id: "nome", label: "Nome" },
+    { id: "email", label: "E-mail (login)" },
+    { id: "senha", label: "Senha" },
+    { id: "perfil", label: "Perfil", type: "select", options: [["admin", "Administrador"], ["usuario", "Usuário"]] },
+  ], async (v) => {
+    const r = await postJSON("/api/usuarios", v);
+    if (r.error) { alert(r.error); throw new Error(r.error); }
+    viewCadastros();
+  }));
   bConta.addEventListener("click", () => openContaModal(null, viewCadastros));
   bCat.addEventListener("click", () => openSimpleModal("Nova categoria", [
     { id: "nome", label: "Nome" },
@@ -551,6 +620,9 @@ async function viewCadastros() {
   view.append(el(tbl("Categorias", ["Categoria","Tipo"],
     STATE.categorias.map((c)=>`<tr><td>${c.nome}</td><td>${c.tipo}</td></tr>`).join(""))));
   view.append(el(tbl("Centros de custo", ["Nome"], STATE.centros.map((c)=>`<tr><td>${c.nome}</td></tr>`).join(""))));
+  view.append(el(tbl("Usuários do sistema", ["Nome", "E-mail", "Perfil", "Ativo"],
+    usuarios.map((u) => `<tr><td>${u.nome}</td><td>${u.email}</td><td>${u.perfil}</td><td>${u.ativo ? "Sim" : "Não"}</td></tr>`).join("")
+    || `<tr><td colspan=4 class="sub">Nenhum usuário.</td></tr>`)));
   view.append(el(tbl("Pessoas (clientes / fornecedores)", ["Nome","Tipo","CPF/CNPJ","Telefone"],
     STATE.pessoas.map((p)=>`<tr><td>${p.nome}</td><td>${p.tipo||""}</td><td>${p.cpf_cnpj||""}</td><td>${p.telefone||""}</td></tr>`).join("")
     || `<tr><td colspan=4 class="sub">Nenhuma pessoa cadastrada.</td></tr>`)));

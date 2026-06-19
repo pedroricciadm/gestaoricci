@@ -253,6 +253,7 @@ app.post("/api/lancamentos/:id/baixar", (req, res) => {
 /* API — contas financeiras (CRUD + saldos)                            */
 /* ------------------------------------------------------------------ */
 app.get("/api/contas/saldos", (req, res) => {
+  const emp = req.query.empresa_id ? Number(req.query.empresa_id) : null;
   res.json(db.prepare(`
     SELECT c.id, c.nome, c.banco, c.tipo, c.empresa_id, e.nome empresa_nome, c.saldo_inicial,
       c.saldo_inicial
@@ -262,7 +263,7 @@ app.get("/api/contas/saldos", (req, res) => {
       - COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='transferencia'),0) AS saldo,
       (SELECT COUNT(*) FROM lancamentos WHERE conta_id=c.id OR conta_destino_id=c.id) movimentos
     FROM contas_financeiras c LEFT JOIN empresas e ON e.id=c.empresa_id
-    WHERE c.ativa=1 ORDER BY e.ordem, c.nome`).all());
+    WHERE c.ativa=1 AND (@emp IS NULL OR c.empresa_id=@emp) ORDER BY e.ordem, c.nome`).all({ emp }));
 });
 app.get("/api/contas/:id/extrato", (req, res) => {
   res.json(db.prepare(`
@@ -288,6 +289,29 @@ app.put("/api/contas/:id", (req, res) => {
 });
 app.delete("/api/contas/:id", (req, res) => {
   db.prepare("UPDATE contas_financeiras SET ativa=0 WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+
+// Usuários (listar / criar / atualizar)
+app.get("/api/usuarios", (req, res) =>
+  res.json(db.prepare("SELECT id,nome,email,perfil,ativo FROM usuarios ORDER BY nome").all()));
+app.post("/api/usuarios", (req, res) => {
+  const { nome, email, senha, perfil } = req.body || {};
+  if (!nome || !email || !senha) return res.status(400).json({ error: "nome, email e senha são obrigatórios" });
+  const existe = db.prepare("SELECT id FROM usuarios WHERE lower(email)=lower(?)").get(email);
+  if (existe) return res.status(409).json({ error: "já existe usuário com esse e-mail" });
+  const r = db.prepare("INSERT INTO usuarios (nome,email,senha_hash,perfil,ativo) VALUES (?,?,?,?,1)")
+    .run(nome, email, auth.hashSenha(senha), perfil || "usuario");
+  res.json({ id: r.lastInsertRowid });
+});
+app.put("/api/usuarios/:id", (req, res) => {
+  const { nome, email, senha, perfil, ativo } = req.body || {};
+  const u = db.prepare("SELECT * FROM usuarios WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ error: "usuário não encontrado" });
+  db.prepare("UPDATE usuarios SET nome=?, email=?, perfil=?, ativo=?, senha_hash=? WHERE id=?").run(
+    nome || u.nome, email || u.email, perfil || u.perfil,
+    ativo == null ? u.ativo : (ativo ? 1 : 0),
+    senha ? auth.hashSenha(senha) : u.senha_hash, req.params.id);
   res.json({ ok: true });
 });
 
