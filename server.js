@@ -357,10 +357,25 @@ app.put("/api/usuarios/:id", (req, res) => {
   const { nome, email, senha, perfil, ativo } = req.body || {};
   const u = db.prepare("SELECT * FROM usuarios WHERE id=?").get(req.params.id);
   if (!u) return res.status(404).json({ error: "usuário não encontrado" });
+  if (email && email.toLowerCase() !== u.email.toLowerCase()) {
+    const dup = db.prepare("SELECT id FROM usuarios WHERE lower(email)=lower(?) AND id<>?").get(email, u.id);
+    if (dup) return res.status(409).json({ error: "já existe usuário com esse e-mail" });
+  }
   db.prepare("UPDATE usuarios SET nome=?, email=?, perfil=?, ativo=?, senha_hash=? WHERE id=?").run(
     nome || u.nome, email || u.email, perfil || u.perfil,
     ativo == null ? u.ativo : (ativo ? 1 : 0),
     senha ? auth.hashSenha(senha) : u.senha_hash, req.params.id);
+  res.json({ ok: true });
+});
+app.delete("/api/usuarios/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (req.usuario && req.usuario.id === id) return res.status(400).json({ error: "Você não pode excluir o próprio usuário logado." });
+  const u = db.prepare("SELECT * FROM usuarios WHERE id=?").get(id);
+  if (!u) return res.status(404).json({ error: "usuário não encontrado" });
+  const admins = db.prepare("SELECT COUNT(*) n FROM usuarios WHERE perfil='admin' AND ativo=1").get().n;
+  if (u.perfil === "admin" && admins <= 1) return res.status(400).json({ error: "Não é possível excluir o último administrador." });
+  db.prepare("DELETE FROM sessoes WHERE usuario_id=?").run(id);
+  db.prepare("DELETE FROM usuarios WHERE id=?").run(id);
   res.json({ ok: true });
 });
 

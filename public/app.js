@@ -711,16 +711,7 @@ async function viewCadastros() {
   const bCentro = el(`<button class="btn">+ Centro de custo</button>`);
   const bPessoa = el(`<button class="btn">+ Pessoa</button>`);
   acts.append(bUsuario, bConta, bCat, bCentro, bPessoa); top.append(acts); view.append(top);
-  bUsuario.addEventListener("click", () => openSimpleModal("Novo usuário", [
-    { id: "nome", label: "Nome" },
-    { id: "email", label: "E-mail (login)" },
-    { id: "senha", label: "Senha" },
-    { id: "perfil", label: "Perfil", type: "select", options: [["admin", "Administrador"], ["usuario", "Usuário"]] },
-  ], async (v) => {
-    const r = await postJSON("/api/usuarios", v);
-    if (r.error) { alert(r.error); throw new Error(r.error); }
-    viewCadastros();
-  }));
+  bUsuario.addEventListener("click", () => openUsuarioModal(null, viewCadastros));
   bConta.addEventListener("click", () => openContaModal(null, viewCadastros));
   bCat.addEventListener("click", () => openSimpleModal("Nova categoria", [
     { id: "nome", label: "Nome" },
@@ -746,9 +737,20 @@ async function viewCadastros() {
   view.append(el(tbl("Categorias", ["Categoria","Tipo"],
     STATE.categorias.map((c)=>`<tr><td>${c.nome}</td><td>${c.tipo}</td></tr>`).join(""))));
   view.append(el(tbl("Centros de custo", ["Nome"], STATE.centros.map((c)=>`<tr><td>${c.nome}</td></tr>`).join(""))));
-  view.append(el(tbl("Usuários do sistema", ["Nome", "E-mail", "Perfil", "Ativo"],
-    usuarios.map((u) => `<tr><td>${u.nome}</td><td>${u.email}</td><td>${u.perfil}</td><td>${u.ativo ? "Sim" : "Não"}</td></tr>`).join("")
-    || `<tr><td colspan=4 class="sub">Nenhum usuário.</td></tr>`)));
+  const usuariosRows = usuarios.map((u) => `<tr>
+      <td>${u.nome}</td><td>${u.email}</td><td>${u.perfil}</td><td>${u.ativo ? "Sim" : "Não"}</td>
+      <td><button class="btn sm" data-uedit="${u.id}">✎ Editar</button> <button class="btn sm red" data-udel="${u.id}">🗑</button></td>
+    </tr>`).join("") || `<tr><td colspan=5 class="sub">Nenhum usuário.</td></tr>`;
+  const usuariosCard = el(tbl("Usuários do sistema", ["Nome", "E-mail", "Perfil", "Ativo", "Ações"], usuariosRows));
+  view.append(usuariosCard);
+  usuariosCard.querySelectorAll("[data-uedit]").forEach((b) => b.addEventListener("click", () => openUsuarioModal(usuarios.find((x) => x.id == b.dataset.uedit), viewCadastros)));
+  usuariosCard.querySelectorAll("[data-udel]").forEach((b) => b.addEventListener("click", async () => {
+    const u = usuarios.find((x) => x.id == b.dataset.udel);
+    if (!confirm(`Excluir o usuário ${u.nome} (${u.email})? Esta ação não pode ser desfeita.`)) return;
+    const r = await fetch("/api/usuarios/" + u.id, { method: "DELETE" }).then((x) => x.json());
+    if (r.error) { alert(r.error); return; }
+    viewCadastros();
+  }));
   view.append(el(tbl("Pessoas (clientes / fornecedores)", ["Nome","Tipo","CPF/CNPJ","Telefone"],
     STATE.pessoas.map((p)=>`<tr><td>${p.nome}</td><td>${p.tipo||""}</td><td>${p.cpf_cnpj||""}</td><td>${p.telefone||""}</td></tr>`).join("")
     || `<tr><td colspan=4 class="sub">Nenhuma pessoa cadastrada.</td></tr>`)));
@@ -772,6 +774,38 @@ function openSimpleModal(titulo, campos, onSave) {
   });
 }
 function postJSON(url, body) { return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()); }
+
+/* Modal de criação/edição de usuário (com senha) */
+function openUsuarioModal(user, onSaved) {
+  user = user || {};
+  const isEdit = !!user.id;
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="modal-bg"><div class="modal" style="max-width:460px">
+    <h3>${isEdit ? "Editar usuário" : "Novo usuário"}</h3>
+    <div class="form-grid">
+      <label class="fld full">Nome<input id="uNome" value="${(user.nome || "").replace(/"/g, "&quot;")}"></label>
+      <label class="fld full">E-mail (login)<input id="uEmail" value="${(user.email || "").replace(/"/g, "&quot;")}"></label>
+      <label class="fld">Perfil<select id="uPerfil"><option value="admin" ${user.perfil === "admin" ? "selected" : ""}>Administrador</option><option value="usuario" ${user.perfil === "usuario" ? "selected" : ""}>Usuário</option></select></label>
+      ${isEdit ? `<label class="fld">Ativo<select id="uAtivo"><option value="1" ${user.ativo ? "selected" : ""}>Sim</option><option value="0" ${!user.ativo ? "selected" : ""}>Não</option></select></label>` : "<span></span>"}
+      <label class="fld full">Senha ${isEdit ? "<span class='sub'>(deixe em branco para manter)</span>" : ""}<input id="uSenha" type="password" autocomplete="new-password"></label>
+    </div>
+    <div class="modal-actions"><button class="btn" id="mCancel">Cancelar</button><button class="btn primary" id="mSave">Salvar</button></div>
+  </div></div>`;
+  $("#mCancel").addEventListener("click", () => (root.innerHTML = ""));
+  $("#mSave").addEventListener("click", async () => {
+    const body = { nome: $("#uNome").value.trim(), email: $("#uEmail").value.trim(), perfil: $("#uPerfil").value };
+    const senha = $("#uSenha").value;
+    if (senha) body.senha = senha;
+    if (isEdit) body.ativo = $("#uAtivo").value === "1";
+    if (!body.nome || !body.email) { alert("Nome e e-mail são obrigatórios."); return; }
+    if (!isEdit && !senha) { alert("Defina uma senha para o novo usuário."); return; }
+    const r = isEdit
+      ? await fetch("/api/usuarios/" + user.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json())
+      : await postJSON("/api/usuarios", body);
+    if (r && r.error) { alert(r.error); return; }
+    root.innerHTML = ""; onSaved && onSaved();
+  });
+}
 
 /* ====================== helpers de UI/charts ====================== */
 function kpi(lbl, val, sub = "", cls = "") { return `<div class="kpi"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div>${sub?`<div class="sub">${sub}</div>`:""}</div>`; }
