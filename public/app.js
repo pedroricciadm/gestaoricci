@@ -24,9 +24,44 @@ async function boot() {
     api("/api/pessoas"), api("/api/unidades"),
   ]);
   renderNav();
+  wireMenu();
   window.addEventListener("hashchange", route);
   if (!location.hash) location.hash = "#/consolidado/dashboard";
   route();
+}
+
+function wireMenu() {
+  const app = document.getElementById("app");
+  const tgl = document.getElementById("menuToggle");
+  const ov = document.getElementById("overlay");
+  if (tgl) tgl.addEventListener("click", () => app.classList.toggle("nav-open"));
+  if (ov) ov.addEventListener("click", () => app.classList.remove("nav-open"));
+}
+function closeDrawer() { const a = document.getElementById("app"); if (a) a.classList.remove("nav-open"); }
+
+function toast(msg, tipo = "ok") {
+  const box = document.getElementById("toasts"); if (!box) return;
+  const icon = tipo === "err" ? "✕" : tipo === "info" ? "ℹ" : "✓";
+  const t = el(`<div class="toast ${tipo}"><span class="toast__icon">${icon}</span><span>${msg}</span><button class="toast__close" aria-label="Fechar">×</button></div>`);
+  box.appendChild(t);
+  const remove = () => { t.style.opacity = "0"; setTimeout(() => t.remove(), 220); };
+  t.querySelector(".toast__close").addEventListener("click", remove);
+  setTimeout(remove, 4000);
+}
+
+/* Modal de confirmação estilizado (Promise<boolean>) */
+function confirmar(msg, { ok = "Excluir", cancel = "Cancelar", perigo = true } = {}) {
+  return new Promise((resolve) => {
+    const root = $("#modal-root");
+    root.innerHTML = `<div class="modal-bg"><div class="modal" style="max-width:420px">
+      <h3>Tem certeza?</h3>
+      <p style="color:var(--muted);margin:0">${msg}</p>
+      <div class="modal-actions"><button class="btn" id="cfN">${cancel}</button><button class="btn ${perigo ? "danger" : "primary"}" id="cfY">${ok}</button></div>
+    </div></div>`;
+    const close = (v) => { root.innerHTML = ""; resolve(v); };
+    $("#cfN").addEventListener("click", () => close(false));
+    $("#cfY").addEventListener("click", () => close(true));
+  });
 }
 
 function renderLogin() {
@@ -56,11 +91,13 @@ async function logout() {
 const SECOES = [
   ["dashboard", "Dashboard", "📈"],
   ["lancamentos", "Lançamentos", "💸"],
+  ["recorrentes", "Recorrentes", "🔁"],
   ["caixa", "Caixa e Bancos", "🏦"],
   ["pagar", "Contas a Pagar", "📕"],
   ["receber", "Contas a Receber", "📗"],
   ["relatorios", "Relatórios", "📑"],
 ];
+const isAdminUI = () => STATE.usuario && STATE.usuario.perfil === "admin";
 
 function renderNav() {
   const h = location.hash.replace(/^#\//, "");
@@ -73,16 +110,17 @@ function renderNav() {
       <div class="nav-emp-sub" data-sub="${e.id}" style="display:${open ? "block" : "none"}">${subs}</div>
     </div>`;
   }).join("");
+  const admin = isAdminUI();
   $("#nav").innerHTML = `
-    <div class="nav-group">Grupo RICCI</div>
+    ${admin ? `<div class="nav-group">Grupo RICCI</div>
     <a href="#/consolidado/dashboard" data-route="consolidado/dashboard">🏠 Dashboard Consolidado</a>
-    <a href="#/consolidado/relatorios" data-route="consolidado/relatorios">📊 Relatórios do Grupo</a>
+    <a href="#/consolidado/relatorios" data-route="consolidado/relatorios">📊 Relatórios do Grupo</a>` : ""}
     <div class="nav-group">Empresas / Frentes</div>
-    ${empresasHtml}
-    <div class="nav-group">Administração</div>
+    ${empresasHtml || '<div class="nav-group" style="color:var(--text-faint)">nenhuma empresa atribuída</div>'}
+    ${admin ? `<div class="nav-group">Administração</div>
     <a href="#/importar" data-route="importar">📥 Importar planilha</a>
-    <a href="#/cadastros" data-route="cadastros">⚙️ Cadastros</a>
-    <div class="nav-group">${STATE.usuario ? STATE.usuario.nome : ""}</div>
+    <a href="#/cadastros" data-route="cadastros">⚙️ Cadastros</a>` : ""}
+    <div class="nav-group">${STATE.usuario ? STATE.usuario.nome : ""}${admin ? " · admin" : ""}</div>
     <a href="#" id="navLogout">🚪 Sair</a>
   `;
   document.querySelectorAll(".nav-emp-head").forEach((hd) => hd.addEventListener("click", () => {
@@ -101,7 +139,15 @@ function setActive(route) {
 function route() {
   const h = location.hash.replace(/^#\//, "") || "consolidado/dashboard";
   clearCharts();
+  closeDrawer();
   renderNav();
+  // não-admin não acessa consolidado / cadastros / importar
+  if (!isAdminUI() && (h.startsWith("consolidado") || h === "cadastros" || h === "importar")) {
+    const primeira = STATE.empresas.find((e) => e.tipo !== "grupo");
+    if (primeira) { location.hash = `#/empresa/${primeira.id}/dashboard`; return; }
+    $("#view").innerHTML = `<div class="empty"><div class="ic">🔒</div>Você ainda não tem empresas atribuídas. Peça a um administrador.</div>`;
+    return;
+  }
   setActive(h);
   const p = h.split("/");
   if (p[0] === "consolidado") {
@@ -111,6 +157,7 @@ function route() {
   if (p[0] === "empresa") {
     const id = Number(p[1]); const sec = p[2] || "dashboard";
     if (sec === "lancamentos") return viewLancamentos(id);
+    if (sec === "recorrentes") return viewRecorrentes(id);
     if (sec === "caixa") return viewCaixa(id);
     if (sec === "pagar") return viewContasStatus("saida", id);
     if (sec === "receber") return viewContasStatus("entrada", id);
@@ -149,12 +196,13 @@ async function viewConsolidado(ano) {
     A <b>Agência dos Correios</b> aparece pelos valores que entram no Grupo; a visão 100%/40% está no card da Agência abaixo e na página da empresa.</div>`));
 
   const k = d.kpis;
+  const heroCls = k.resultadoAposFamilia >= 0 ? "pos" : "neg";
   view.append(el(`<div class="kpis">
-    ${kpi("Faturamento", BRL(k.faturamento), "entradas consolidadas")}
-    ${kpi("Custo / Despesa", BRL(k.custo), "saídas operacionais")}
-    ${kpi("Resultado operacional", BRL(k.resultadoOperacional), k.resultadoOperacional>=0?"superávit":"déficit", k.resultadoOperacional>=0?"pos":"neg")}
-    ${kpi("Distribuição familiar", BRL(k.distribuicaoFamiliar), "retiradas (compulsória)")}
-    ${kpi("Resultado após família", BRL(k.resultadoAposFamilia), k.resultadoAposFamilia>=0?"superávit":"déficit", k.resultadoAposFamilia>=0?"pos":"neg")}
+    ${kpi("Resultado após família", BRL(k.resultadoAposFamilia), k.resultadoAposFamilia >= 0 ? "superávit do grupo" : "déficit do grupo", heroCls, true)}
+    ${kpi("Faturamento", BRL(k.faturamento), "entradas consolidadas", "info")}
+    ${kpi("Custo / Despesa", BRL(k.custo), "saídas operacionais", "neg")}
+    ${kpi("Resultado operacional", BRL(k.resultadoOperacional), k.resultadoOperacional >= 0 ? "superávit" : "déficit", k.resultadoOperacional >= 0 ? "pos" : "neg")}
+    ${kpi("Distribuição familiar", BRL(k.distribuicaoFamiliar), "retiradas (compulsória)", "info")}
   </div>`));
 
   const grid = el(`<div class="grid">
@@ -198,7 +246,7 @@ async function viewConsolidado(ano) {
 }
 
 function renderAgf(box, agf) {
-  if (!agf || !agf.cem) { box.innerHTML = '<p class="sub">Arquivo da AGF não encontrado.</p>'; return; }
+  if (!agf || !agf.cem) { box.innerHTML = `<div class="empty"><div class="ic">🏤</div>Visão 100%/40% indisponível: a planilha da AGF não está no servidor.<br><span class="sub">Os valores que entram no Grupo continuam nos lançamentos da Agência.</span></div>`; return; }
   const c = agf.cem, pct = Math.round(agf.pctGrupo * 100);
   box.innerHTML = `<p class="sub" style="margin-top:0">Operação exibida a <b>100%</b> (gestão integral). Resultado atribuível ao Grupo: <b>${pct}%</b>.</p>
   <div class="kpis">
@@ -228,10 +276,10 @@ async function viewEmpresa(id, ano) {
 
   const k = d.kpis;
   view.append(el(`<div class="kpis">
-    ${kpi("Faturamento", BRL(k.faturamento))}
-    ${kpi("Despesa", BRL(k.despesa))}
-    ${kpi("Resultado", BRL(k.resultado), "", k.resultado>=0?"pos":"neg")}
-    ${e.percentual_participacao < 100 ? kpi(`Atribuível ao Grupo (${e.percentual_participacao}%)`, BRL(k.resultadoAtribuivel), "", "pos") : ""}
+    ${kpi("Resultado", BRL(k.resultado), k.resultado >= 0 ? "superávit" : "déficit", k.resultado >= 0 ? "pos" : "neg", true)}
+    ${kpi("Faturamento", BRL(k.faturamento), "entradas", "info")}
+    ${kpi("Despesa", BRL(k.despesa), "saídas", "neg")}
+    ${e.percentual_participacao < 100 ? kpi(`Atribuível ao Grupo (${e.percentual_participacao}%)`, BRL(k.resultadoAtribuivel), "participação", "pos") : ""}
   </div>`));
 
   const grid = el(`<div class="grid">
@@ -273,7 +321,7 @@ async function viewLancamentos(empresaId) {
   const btnT = el(`<button class="btn">⇄ Transferência</button>`);
   tb.append(fAno, fTipo, fQ, btnE, btnS, btnT);
   view.append(tb);
-  const tableCard = el(`<div class="card"><div class="scroll"><table id="tLanc"></table></div></div>`);
+  const tableCard = el(`<div class="card"><div class="scroll"><table id="tLanc" class="acts"></table></div></div>`);
   view.append(tableCard);
 
   async function load() {
@@ -292,13 +340,16 @@ async function viewLancamentos(empresaId) {
         <td><span class="pill ${r.tipo==='entrada'?'green':r.tipo==='saida'?'red':''}">${r.tipo}</span></td>
         <td class="${r.tipo==='entrada'?'pos':r.tipo==='saida'?'neg':''}">${BRL2(r.valor_liquido)}</td>
         <td><span class="pill">${r.origem}</span></td>
-        <td><button class="btn sm" data-edit="${r.id}">✎</button> <button class="btn sm red" data-del="${r.id}">🗑</button></td>
-      </tr>`).join("") || '<tr><td colspan=8 class="sub">Nenhum lançamento.</td></tr>'}</tbody>`;
+        <td data-label="Ações"><div class="row-actions"><button class="btn sm icon" aria-label="Editar lançamento" title="Editar" data-edit="${r.id}">✎</button><button class="btn sm icon red" aria-label="Excluir lançamento" title="Excluir" data-del="${r.id}">🗑</button></div></td>
+      </tr>`).join("") || '<tr><td colspan=8><div class="empty"><div class="ic">💸</div>Nenhum lançamento ainda.</div></td></tr>'}</tbody>`;
     $("#tLanc").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", async () => {
       const r = rows.find((x) => x.id == b.dataset.edit); openLancModal(r, load);
     }));
     $("#tLanc").querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
-      if (confirm("Excluir este lançamento?")) { await fetch("/api/lancamentos/" + b.dataset.del, { method: "DELETE" }); load(); }
+      if (!(await confirmar("Excluir este lançamento? Esta ação não pode ser desfeita."))) return;
+      const r = await fetch("/api/lancamentos/" + b.dataset.del, { method: "DELETE" }).then((x) => x.json());
+      if (r.error) { toast(r.error, "err"); return; }
+      toast("Lançamento excluído."); load();
     }));
   }
   [fAno, fTipo].forEach((f) => f.querySelector("select").addEventListener("change", load));
@@ -380,9 +431,11 @@ function openLancModal(data, onSaved) {
     };
     if (!body.empresa_id || !body.valor_liquido || !body.data_competencia) { alert("Preencha empresa, valor e data."); return; }
     if (t === "transferencia" && (!body.conta_id || !body.conta_destino_id)) { alert("Transferência exige conta de origem e destino."); return; }
-    if (isEdit) await fetch("/api/lancamentos/" + data.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    else await fetch("/api/lancamentos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    close(); onSaved && onSaved();
+    const resp = isEdit
+      ? await fetch("/api/lancamentos/" + data.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json())
+      : await fetch("/api/lancamentos", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
+    if (resp && resp.error) { alert(resp.error); return; }
+    close(); toast(isEdit ? "Lançamento atualizado." : "Lançamento adicionado."); onSaved && onSaved();
   });
 }
 
@@ -490,22 +543,110 @@ async function viewContasStatus(tipo, empresaId) {
   const total = rows.reduce((s, r) => s + (r.valor_liquido || 0), 0);
   view.append(el(`<div class="kpis">${kpi("Total " + (ehPagar?"a pagar":"a receber"), BRL(total), rows.length + " títulos")}</div>`));
 
-  const card = el(`<div class="card"><div class="scroll"><table id="t"></table></div></div>`);
+  const card = el(`<div class="card"><div class="scroll"><table id="t" class="acts"></table></div></div>`);
   view.append(card);
-  $("#t").innerHTML = `<thead><tr><th>Vencimento</th><th>Empresa</th><th>Descrição</th><th>${ehPagar?'Fornecedor':'Cliente'}</th><th>Valor</th><th>Status</th><th></th></tr></thead>
+  $("#t").innerHTML = `<thead><tr><th>Vencimento</th><th>Empresa</th><th>Descrição</th><th>${ehPagar?'Fornecedor':'Cliente'}</th><th>Valor</th><th>Status</th><th>Ações</th></tr></thead>
     <tbody>${rows.map((r) => `<tr>
       <td>${((r.data_vencimento||r.data_competencia)||"").split("-").reverse().join("/")}</td>
       <td>${r.empresa_nome}</td><td>${r.descricao||""}</td><td>${r.pessoa_nome||"—"}</td>
       <td class="${ehPagar?'neg':'pos'}">${BRL2(r.valor_liquido)}</td>
       <td><span class="pill ${r.status==='atrasado'?'red':'amber'}">${r.status}</span></td>
-      <td><button class="btn sm green" data-baixar="${r.id}">${ehPagar?'Pagar':'Receber'}</button>
-          <button class="btn sm" data-edit="${r.id}">✎</button></td></tr>`).join("")
-      || `<tr><td colspan=7 class="sub">Nenhum título pendente.</td></tr>`}</tbody>`;
+      <td><div class="row-actions"><button class="btn sm green" data-baixar="${r.id}">${ehPagar?'Pagar':'Receber'}</button>
+          <button class="btn sm icon" aria-label="Editar título" title="Editar" data-edit="${r.id}">✎</button></div></td></tr>`).join("")
+      || `<tr><td colspan=7><div class="empty"><div class="ic">${ehPagar?'📕':'📗'}</div>Nenhum título pendente.</div></td></tr>`}</tbody>`;
   $("#t").querySelectorAll("[data-baixar]").forEach((b) => b.addEventListener("click", async () => {
     await fetch(`/api/lancamentos/${b.dataset.baixar}/baixar`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: ehPagar ? "pago" : "recebido" }) });
     refresh();
   }));
   $("#t").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openLancModal(rows.find((x) => x.id == b.dataset.edit), refresh)));
+}
+
+/* ====================== RECORRENTES ====================== */
+async function viewRecorrentes(empresaId) {
+  const view = $("#view"); view.innerHTML = "Carregando…";
+  const emp = STATE.empresas.find((e) => e.id === empresaId);
+  const recs = await api("/api/recorrencias?empresa_id=" + empresaId);
+  view.innerHTML = "";
+  const refresh = () => viewRecorrentes(empresaId);
+  const now = new Date();
+  const top = el(`<div class="topbar"><div><h1>Recorrentes — ${emp ? emp.nome : ""}</h1><div class="sub">Receitas/despesas fixas mensais</div></div></div>`);
+  const right = el(`<div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap"></div>`);
+  const anos = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
+  const MES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  right.append(
+    el(`<label class="fld">Ano<select id="rAno">${anos.map((a) => `<option ${a === now.getFullYear() ? "selected" : ""}>${a}</option>`).join("")}</select></label>`),
+    el(`<label class="fld">Mês<select id="rMes">${MES.map((m, i) => `<option value="${i + 1}" ${i === now.getMonth() ? "selected" : ""}>${m}</option>`).join("")}</select></label>`),
+    el(`<button class="btn" id="bGerar">⚙ Gerar lançamentos do mês</button>`),
+    el(`<button class="btn green" id="bNovaRec">+ Recorrência</button>`));
+  top.append(right); view.append(top);
+  right.querySelector("#bNovaRec").addEventListener("click", () => openRecorrenciaModal({ empresa_id: empresaId }, refresh));
+  right.querySelector("#bGerar").addEventListener("click", async () => {
+    const r = await postJSON("/api/recorrencias/gerar", { empresa_id: empresaId, ano: Number($("#rAno").value), mes: Number($("#rMes").value) });
+    if (r.error) { alert(r.error); return; }
+    toast(`Gerados ${r.gerados} lançamento(s); ${r.pulados} já existiam.`, r.gerados ? "ok" : "ok");
+  });
+
+  view.append(el(`<div class="kpis">
+    ${kpi("Recorrências ativas", recs.length, "modelos cadastrados", "info")}
+    ${kpi("Receitas fixas / mês", BRL(recs.filter((r) => r.tipo === "entrada").reduce((s, r) => s + r.valor, 0)), "", "pos")}
+    ${kpi("Despesas fixas / mês", BRL(recs.filter((r) => r.tipo === "saida").reduce((s, r) => s + r.valor, 0)), "", "neg")}
+  </div>`));
+
+  const rows = recs.map((r) => `<tr>
+      <td>${r.descricao || "—"}</td>
+      <td><span class="pill ${r.tipo === "entrada" ? "green" : "red"}">${r.tipo}</span></td>
+      <td>${r.categoria_nome || "—"}</td>
+      <td>dia ${r.dia_vencimento}</td>
+      <td class="${r.tipo === "entrada" ? "pos" : "neg"}">${BRL2(r.valor)}</td>
+      <td><div class="row-actions"><button class="btn sm icon" aria-label="Editar recorrência" title="Editar" data-redit="${r.id}">✎</button><button class="btn sm icon red" aria-label="Excluir recorrência" title="Excluir" data-rdel="${r.id}">🗑</button></div></td>
+    </tr>`).join("");
+  const card = el(`<div class="card"><div class="scroll"><table class="acts"><thead><tr><th>Descrição</th><th>Tipo</th><th>Categoria</th><th>Vencimento</th><th>Valor</th><th>Ações</th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="6"><div class="empty"><div class="ic">🔁</div>Nenhuma recorrência. Cadastre despesas/receitas fixas e use "Gerar lançamentos do mês".</div></td></tr>`}</tbody></table></div></div>`);
+  view.append(card);
+  card.querySelectorAll("[data-redit]").forEach((b) => b.addEventListener("click", () => openRecorrenciaModal(recs.find((x) => x.id == b.dataset.redit), refresh)));
+  card.querySelectorAll("[data-rdel]").forEach((b) => b.addEventListener("click", async () => {
+    if (!(await confirmar("Excluir esta recorrência? Os lançamentos já gerados permanecem."))) return;
+    await fetch("/api/recorrencias/" + b.dataset.rdel, { method: "DELETE" }); toast("Recorrência excluída."); refresh();
+  }));
+}
+
+function openRecorrenciaModal(data, onSaved) {
+  data = data || {};
+  const isEdit = !!data.id;
+  const empId = data.empresa_id;
+  const optCat = (tipo) => STATE.categorias.filter((c) => c.tipo === tipo).map((c) => `<option value="${c.id}" ${data.categoria_id == c.id ? "selected" : ""}>${c.nome}</option>`).join("");
+  const optUni = STATE.unidades.filter((u) => u.empresa_id == empId).map((u) => `<option value="${u.id}" ${data.unidade_id == u.id ? "selected" : ""}>${u.nome}</option>`).join("");
+  const optConta = STATE.contas.map((c) => `<option value="${c.id}" ${data.conta_id == c.id ? "selected" : ""}>${c.nome}</option>`).join("");
+  const optCC = STATE.centros.map((c) => `<option value="${c.id}" ${data.centro_custo_id == c.id ? "selected" : ""}>${c.nome}</option>`).join("");
+  const tipo = data.tipo || "saida";
+  const root = $("#modal-root");
+  root.innerHTML = `<div class="modal-bg"><div class="modal">
+    <h3>${isEdit ? "Editar recorrência" : "Nova recorrência"}</h3>
+    <div class="form-grid">
+      <label class="fld">Tipo<select id="rTipo"><option value="saida" ${tipo === "saida" ? "selected" : ""}>Saída (despesa)</option><option value="entrada" ${tipo === "entrada" ? "selected" : ""}>Entrada (receita)</option></select></label>
+      <label class="fld">Valor (R$)<input id="rValor" type="number" step="0.01" value="${data.valor || ""}"></label>
+      <label class="fld full">Descrição<input id="rDesc" value="${(data.descricao || "").replace(/"/g, "&quot;")}"></label>
+      <label class="fld">Categoria<select id="rCat">${optCat(tipo)}</select></label>
+      <label class="fld">Dia do vencimento<input id="rDia" type="number" min="1" max="28" value="${data.dia_vencimento || 5}"></label>
+      <label class="fld">Unidade<select id="rUni"><option value="">—</option>${optUni}</select></label>
+      <label class="fld">Conta<select id="rConta"><option value="">—</option>${optConta}</select></label>
+      <label class="fld full">Centro de custo<select id="rCC"><option value="">—</option>${optCC}</select></label>
+    </div>
+    <div class="modal-actions"><button class="btn" id="mCancel">Cancelar</button><button class="btn primary" id="mSave">Salvar</button></div>
+  </div></div>`;
+  $("#rTipo").addEventListener("change", () => { $("#rCat").innerHTML = optCat($("#rTipo").value); });
+  $("#mCancel").addEventListener("click", () => (root.innerHTML = ""));
+  $("#mSave").addEventListener("click", async () => {
+    const body = { empresa_id: empId, tipo: $("#rTipo").value, valor: Number($("#rValor").value), descricao: $("#rDesc").value,
+      categoria_id: $("#rCat").value || null, dia_vencimento: Number($("#rDia").value) || 5, unidade_id: $("#rUni").value || null,
+      conta_id: $("#rConta").value || null, centro_custo_id: $("#rCC").value || null };
+    if (!body.valor) { alert("Informe o valor."); return; }
+    const r = isEdit
+      ? await fetch("/api/recorrencias/" + data.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json())
+      : await postJSON("/api/recorrencias", body);
+    if (r && r.error) { alert(r.error); return; }
+    root.innerHTML = ""; toast("Recorrência salva."); onSaved && onSaved();
+  });
 }
 
 /* ====================== RELATÓRIOS ====================== */
@@ -739,17 +880,17 @@ async function viewCadastros() {
   view.append(el(tbl("Centros de custo", ["Nome"], STATE.centros.map((c)=>`<tr><td>${c.nome}</td></tr>`).join(""))));
   const usuariosRows = usuarios.map((u) => `<tr>
       <td>${u.nome}</td><td>${u.email}</td><td>${u.perfil}</td><td>${u.ativo ? "Sim" : "Não"}</td>
-      <td><button class="btn sm" data-uedit="${u.id}">✎ Editar</button> <button class="btn sm red" data-udel="${u.id}">🗑</button></td>
+      <td><div class="row-actions"><button class="btn sm" data-uedit="${u.id}">✎ Editar</button> <button class="btn sm icon red" aria-label="Excluir usuário" title="Excluir" data-udel="${u.id}">🗑</button></div></td>
     </tr>`).join("") || `<tr><td colspan=5 class="sub">Nenhum usuário.</td></tr>`;
   const usuariosCard = el(tbl("Usuários do sistema", ["Nome", "E-mail", "Perfil", "Ativo", "Ações"], usuariosRows));
   view.append(usuariosCard);
   usuariosCard.querySelectorAll("[data-uedit]").forEach((b) => b.addEventListener("click", () => openUsuarioModal(usuarios.find((x) => x.id == b.dataset.uedit), viewCadastros)));
   usuariosCard.querySelectorAll("[data-udel]").forEach((b) => b.addEventListener("click", async () => {
     const u = usuarios.find((x) => x.id == b.dataset.udel);
-    if (!confirm(`Excluir o usuário ${u.nome} (${u.email})? Esta ação não pode ser desfeita.`)) return;
+    if (!(await confirmar(`Excluir o usuário ${u.nome} (${u.email})? Esta ação não pode ser desfeita.`))) return;
     const r = await fetch("/api/usuarios/" + u.id, { method: "DELETE" }).then((x) => x.json());
-    if (r.error) { alert(r.error); return; }
-    viewCadastros();
+    if (r.error) { toast(r.error, "err"); return; }
+    toast("Usuário excluído."); viewCadastros();
   }));
   view.append(el(tbl("Pessoas (clientes / fornecedores)", ["Nome","Tipo","CPF/CNPJ","Telefone"],
     STATE.pessoas.map((p)=>`<tr><td>${p.nome}</td><td>${p.tipo||""}</td><td>${p.cpf_cnpj||""}</td><td>${p.telefone||""}</td></tr>`).join("")
@@ -775,12 +916,15 @@ function openSimpleModal(titulo, campos, onSave) {
 }
 function postJSON(url, body) { return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json()); }
 
-/* Modal de criação/edição de usuário (com senha) */
-function openUsuarioModal(user, onSaved) {
+/* Modal de criação/edição de usuário (com senha + acessos por empresa) */
+async function openUsuarioModal(user, onSaved) {
   user = user || {};
   const isEdit = !!user.id;
+  let granted = [];
+  if (isEdit) { try { granted = await api("/api/usuarios/" + user.id + "/empresas"); } catch (e) { granted = []; } }
+  const empresas = STATE.empresas.filter((e) => e.tipo !== "grupo");
   const root = $("#modal-root");
-  root.innerHTML = `<div class="modal-bg"><div class="modal" style="max-width:460px">
+  root.innerHTML = `<div class="modal-bg"><div class="modal" style="max-width:480px">
     <h3>${isEdit ? "Editar usuário" : "Novo usuário"}</h3>
     <div class="form-grid">
       <label class="fld full">Nome<input id="uNome" value="${(user.nome || "").replace(/"/g, "&quot;")}"></label>
@@ -788,27 +932,34 @@ function openUsuarioModal(user, onSaved) {
       <label class="fld">Perfil<select id="uPerfil"><option value="admin" ${user.perfil === "admin" ? "selected" : ""}>Administrador</option><option value="usuario" ${user.perfil === "usuario" ? "selected" : ""}>Usuário</option></select></label>
       ${isEdit ? `<label class="fld">Ativo<select id="uAtivo"><option value="1" ${user.ativo ? "selected" : ""}>Sim</option><option value="0" ${!user.ativo ? "selected" : ""}>Não</option></select></label>` : "<span></span>"}
       <label class="fld full">Senha ${isEdit ? "<span class='sub'>(deixe em branco para manter)</span>" : ""}<input id="uSenha" type="password" autocomplete="new-password"></label>
+      <div class="fld full" id="uEmpWrap">Empresas com acesso <span class="sub">(somente para perfil Usuário; Administrador vê tudo)</span>
+        <div class="checks" id="uEmpresas">${empresas.map((e) => `<label><input type="checkbox" value="${e.id}" ${granted.includes(e.id) ? "checked" : ""}> ${e.nome}</label>`).join("")}</div>
+      </div>
     </div>
     <div class="modal-actions"><button class="btn" id="mCancel">Cancelar</button><button class="btn primary" id="mSave">Salvar</button></div>
   </div></div>`;
+  const toggleEmp = () => { $("#uEmpWrap").style.display = $("#uPerfil").value === "admin" ? "none" : "block"; };
+  $("#uPerfil").addEventListener("change", toggleEmp); toggleEmp();
   $("#mCancel").addEventListener("click", () => (root.innerHTML = ""));
   $("#mSave").addEventListener("click", async () => {
     const body = { nome: $("#uNome").value.trim(), email: $("#uEmail").value.trim(), perfil: $("#uPerfil").value };
     const senha = $("#uSenha").value;
     if (senha) body.senha = senha;
     if (isEdit) body.ativo = $("#uAtivo").value === "1";
+    if (body.perfil === "usuario") body.empresa_ids = Array.from(document.querySelectorAll("#uEmpresas input:checked")).map((c) => Number(c.value));
     if (!body.nome || !body.email) { alert("Nome e e-mail são obrigatórios."); return; }
     if (!isEdit && !senha) { alert("Defina uma senha para o novo usuário."); return; }
+    if (body.perfil === "usuario" && (!body.empresa_ids || !body.empresa_ids.length)) { alert("Selecione ao menos uma empresa para o usuário."); return; }
     const r = isEdit
       ? await fetch("/api/usuarios/" + user.id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json())
       : await postJSON("/api/usuarios", body);
     if (r && r.error) { alert(r.error); return; }
-    root.innerHTML = ""; onSaved && onSaved();
+    root.innerHTML = ""; toast(isEdit ? "Usuário atualizado." : "Usuário criado."); onSaved && onSaved();
   });
 }
 
 /* ====================== helpers de UI/charts ====================== */
-function kpi(lbl, val, sub = "", cls = "") { return `<div class="kpi"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div>${sub?`<div class="sub">${sub}</div>`:""}</div>`; }
+function kpi(lbl, val, sub = "", cls = "", hero = false) { return `<div class="kpi ${cls} ${hero ? "hero" : ""}"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`; }
 function mesesComDados(sm) { let n = 0; for (let i = 0; i < 12; i++) if (sm.entrada[i] || sm.saida[i]) n = i + 1; return n || 12; }
 function bar(label, data, color) { return { type: "bar", label, data, backgroundColor: color }; }
 function line(label, data, color) { return { type: "line", label, data, borderColor: color, backgroundColor: color, borderWidth: 2, tension: .3 }; }

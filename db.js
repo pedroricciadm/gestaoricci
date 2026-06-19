@@ -158,4 +158,30 @@ CREATE TABLE IF NOT EXISTS permissoes_usuario_empresa (
 );
 `);
 
+// Recorrências (modelos de lançamentos fixos mensais)
+db.exec(`
+CREATE TABLE IF NOT EXISTS recorrencias (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  empresa_id INTEGER NOT NULL,
+  unidade_id INTEGER,
+  conta_id INTEGER,
+  categoria_id INTEGER,
+  centro_custo_id INTEGER,
+  pessoa_id INTEGER,
+  tipo TEXT NOT NULL,                 -- entrada | saida
+  descricao TEXT,
+  valor REAL NOT NULL,
+  dia_vencimento INTEGER DEFAULT 5,   -- dia do mês (1-28)
+  ativa INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY (empresa_id) REFERENCES empresas(id)
+);
+`);
+
+// Migração idempotente: coluna recorrencia_id em lancamentos (DB já existente em produção)
+const _lancCols = db.prepare("PRAGMA table_info(lancamentos)").all().map((c) => c.name);
+if (!_lancCols.includes("recorrencia_id")) {
+  db.exec("ALTER TABLE lancamentos ADD COLUMN recorrencia_id INTEGER");
+}
+
 module.exports = db;

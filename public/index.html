@@ -9,14 +9,17 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
-<div class="app">
-  <aside class="sidebar">
+<div class="app" id="app">
+  <button class="menu-toggle" id="menuToggle" aria-label="Abrir menu">☰</button>
+  <aside class="sidebar" id="sidebar">
     <div class="brand">📊 Grupo RICCI<small>Sistema de Gestão</small></div>
     <nav class="nav" id="nav"></nav>
   </aside>
+  <div class="overlay" id="overlay"></div>
   <main class="content" id="view">Carregando…</main>
 </div>
 <div id="modal-root"></div>
+<div id="toasts"></div>
 <script src="/app.js"></script>
 </body>
 </html>

@@ -16,6 +16,21 @@ const MESES = ["JAN","FEV","MAR","ABR","MAI","JUN","JUL","AGO","SET","OUT","NOV"
 const PCT_GRUPO_AGF = 0.40;
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : 0);
 
+// ---- Permissões por empresa ----
+function isAdmin(req) { return req.usuario && req.usuario.perfil === "admin"; }
+function empresasPermitidas(usuarioId) {
+  return db.prepare("SELECT empresa_id FROM permissoes_usuario_empresa WHERE usuario_id=?").all(usuarioId).map((r) => r.empresa_id);
+}
+function podeEmpresa(req, empresaId) {
+  if (isAdmin(req)) return true;
+  if (!req.usuario || !empresaId) return false;
+  return empresasPermitidas(req.usuario.id).includes(Number(empresaId));
+}
+function exigirAdmin(req, res) {
+  if (!isAdmin(req)) { res.status(403).json({ error: "Acesso restrito a administradores." }); return false; }
+  return true;
+}
+
 // garante seed na primeira execução
 if (db.prepare("SELECT COUNT(*) n FROM empresas").get().n === 0) {
   require("./seed");
@@ -147,8 +162,12 @@ function buildAGF() {
 /* ------------------------------------------------------------------ */
 /* API — cadastros                                                     */
 /* ------------------------------------------------------------------ */
-app.get("/api/empresas", (req, res) =>
-  res.json(db.prepare("SELECT * FROM empresas WHERE ativa=1 ORDER BY ordem").all()));
+app.get("/api/empresas", (req, res) => {
+  const todas = db.prepare("SELECT * FROM empresas WHERE ativa=1 ORDER BY ordem").all();
+  if (isAdmin(req)) return res.json(todas);
+  const permitidas = empresasPermitidas(req.usuario.id);
+  res.json(todas.filter((e) => permitidas.includes(e.id)));
+});
 app.get("/api/unidades", (req, res) =>
   res.json(db.prepare("SELECT * FROM unidades WHERE ativa=1 " + (req.query.empresa_id ? "AND empresa_id=?" : "")).all(...(req.query.empresa_id ? [req.query.empresa_id] : []))));
 app.get("/api/contas", (req, res) =>
@@ -160,6 +179,7 @@ app.get("/api/centros-custo", (req, res) =>
 app.get("/api/pessoas", (req, res) =>
   res.json(db.prepare("SELECT * FROM pessoas ORDER BY nome").all()));
 app.post("/api/pessoas", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
   const b = req.body;
   const r = db.prepare("INSERT INTO pessoas (nome,tipo,cpf_cnpj,empresa_id,telefone,email,observacoes) VALUES (?,?,?,?,?,?,?)")
     .run(b.nome, b.tipo, b.cpf_cnpj, b.empresa_id || null, b.telefone, b.email, b.observacoes);
@@ -171,7 +191,12 @@ app.post("/api/pessoas", (req, res) => {
 /* ------------------------------------------------------------------ */
 app.get("/api/lancamentos", (req, res) => {
   const { empresa_id, ano, mes, tipo, categoria_id, status, origem, q, limit } = req.query;
+  if (empresa_id && !podeEmpresa(req, empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const w = [], p = {};
+  if (!isAdmin(req) && !empresa_id) {
+    const ids = empresasPermitidas(req.usuario.id);
+    w.push(`l.empresa_id IN (${ids.length ? ids.map((x) => Number(x)).join(",") : "0"})`);
+  }
   if (empresa_id) { w.push("l.empresa_id=@empresa_id"); p.empresa_id = empresa_id; }
   if (ano) { w.push("substr(l.data_competencia,1,4)=@ano"); p.ano = String(ano); }
   if (mes) { w.push("substr(l.data_competencia,6,2)=@mes"); p.mes = String(mes).padStart(2, "0"); }
@@ -217,6 +242,7 @@ function upsertLanc(b) {
 app.post("/api/lancamentos", (req, res) => {
   if (!req.body.empresa_id || !req.body.tipo || !req.body.data_competencia)
     return res.status(400).json({ error: "empresa_id, tipo e data_competencia são obrigatórios" });
+  if (!podeEmpresa(req, req.body.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const d = upsertLanc(req.body);
   const r = db.prepare(`INSERT INTO lancamentos
     (empresa_id,unidade_id,conta_id,pessoa_id,categoria_id,centro_custo_id,conta_destino_id,tipo,descricao,
@@ -227,6 +253,9 @@ app.post("/api/lancamentos", (req, res) => {
 });
 
 app.put("/api/lancamentos/:id", (req, res) => {
+  const atual = db.prepare("SELECT empresa_id FROM lancamentos WHERE id=?").get(req.params.id);
+  if (!atual) return res.status(404).json({ error: "lançamento não encontrado" });
+  if (!podeEmpresa(req, atual.empresa_id) || !podeEmpresa(req, req.body.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const d = upsertLanc(req.body);
   db.prepare(`UPDATE lancamentos SET empresa_id=@empresa_id,unidade_id=@unidade_id,conta_id=@conta_id,pessoa_id=@pessoa_id,
     categoria_id=@categoria_id,centro_custo_id=@centro_custo_id,conta_destino_id=@conta_destino_id,tipo=@tipo,descricao=@descricao,
@@ -237,12 +266,16 @@ app.put("/api/lancamentos/:id", (req, res) => {
 });
 
 app.delete("/api/lancamentos/:id", (req, res) => {
+  const atual = db.prepare("SELECT empresa_id FROM lancamentos WHERE id=?").get(req.params.id);
+  if (atual && !podeEmpresa(req, atual.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   db.prepare("DELETE FROM lancamentos WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
 
 // Baixa rápida (marcar pago/recebido + data de pagamento)
 app.post("/api/lancamentos/:id/baixar", (req, res) => {
+  const atual = db.prepare("SELECT empresa_id FROM lancamentos WHERE id=?").get(req.params.id);
+  if (atual && !podeEmpresa(req, atual.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   db.prepare(`UPDATE lancamentos SET status=@status,
     data_pagamento=COALESCE(@dp, date('now','localtime')), updated_at=datetime('now','localtime')
     WHERE id=@id`).run({ status: req.body.status || "pago", dp: req.body.data_pagamento || null, id: req.params.id });
@@ -254,6 +287,10 @@ app.post("/api/importar", (req, res) => {
   const { lancamentos, evitarDuplicados } = req.body || {};
   if (!Array.isArray(lancamentos) || !lancamentos.length)
     return res.status(400).json({ error: "Nada para importar." });
+  if (!isAdmin(req)) {
+    const permit = new Set(empresasPermitidas(req.usuario.id));
+    if (lancamentos.some((l) => !permit.has(Number(l.empresa_id)))) return res.status(403).json({ error: "A importação contém empresa sem acesso." });
+  }
 
   // cache de categorias por nome (resolve ou cria)
   const catByNome = {};
@@ -299,10 +336,80 @@ app.post("/api/importar", (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* API — recorrências (lançamentos fixos mensais)                      */
+/* ------------------------------------------------------------------ */
+app.get("/api/recorrencias", (req, res) => {
+  const emp = req.query.empresa_id;
+  if (emp && !podeEmpresa(req, emp)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const rows = db.prepare(`SELECT r.*, c.nome categoria_nome, u.nome unidade_nome, ct.nome conta_nome
+    FROM recorrencias r LEFT JOIN categorias c ON c.id=r.categoria_id LEFT JOIN unidades u ON u.id=r.unidade_id
+    LEFT JOIN contas_financeiras ct ON ct.id=r.conta_id
+    WHERE r.ativa=1 ${emp ? "AND r.empresa_id=@emp" : ""} ORDER BY r.tipo, r.descricao`).all(emp ? { emp } : {});
+  res.json(rows);
+});
+app.post("/api/recorrencias", (req, res) => {
+  const b = req.body || {};
+  if (!b.empresa_id || !b.tipo || !(Number(b.valor) > 0)) return res.status(400).json({ error: "empresa, tipo e valor são obrigatórios" });
+  if (!podeEmpresa(req, b.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const r = db.prepare(`INSERT INTO recorrencias (empresa_id,unidade_id,conta_id,categoria_id,centro_custo_id,pessoa_id,tipo,descricao,valor,dia_vencimento,ativa)
+    VALUES (@empresa_id,@unidade_id,@conta_id,@categoria_id,@centro_custo_id,@pessoa_id,@tipo,@descricao,@valor,@dia,1)`).run({
+    empresa_id: b.empresa_id, unidade_id: b.unidade_id || null, conta_id: b.conta_id || null, categoria_id: b.categoria_id || null,
+    centro_custo_id: b.centro_custo_id || null, pessoa_id: b.pessoa_id || null, tipo: b.tipo, descricao: b.descricao || "",
+    valor: Number(b.valor), dia: Number(b.dia_vencimento) || 5,
+  });
+  res.json({ id: r.lastInsertRowid });
+});
+app.put("/api/recorrencias/:id", (req, res) => {
+  const cur = db.prepare("SELECT empresa_id FROM recorrencias WHERE id=?").get(req.params.id);
+  if (!cur) return res.status(404).json({ error: "recorrência não encontrada" });
+  if (!podeEmpresa(req, cur.empresa_id) || !podeEmpresa(req, req.body.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const b = req.body;
+  db.prepare(`UPDATE recorrencias SET empresa_id=@empresa_id,unidade_id=@unidade_id,conta_id=@conta_id,categoria_id=@categoria_id,centro_custo_id=@centro_custo_id,pessoa_id=@pessoa_id,tipo=@tipo,descricao=@descricao,valor=@valor,dia_vencimento=@dia WHERE id=@id`).run({
+    empresa_id: b.empresa_id, unidade_id: b.unidade_id || null, conta_id: b.conta_id || null, categoria_id: b.categoria_id || null,
+    centro_custo_id: b.centro_custo_id || null, pessoa_id: b.pessoa_id || null, tipo: b.tipo, descricao: b.descricao || "",
+    valor: Number(b.valor), dia: Number(b.dia_vencimento) || 5, id: req.params.id,
+  });
+  res.json({ ok: true });
+});
+app.delete("/api/recorrencias/:id", (req, res) => {
+  const cur = db.prepare("SELECT empresa_id FROM recorrencias WHERE id=?").get(req.params.id);
+  if (cur && !podeEmpresa(req, cur.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  db.prepare("UPDATE recorrencias SET ativa=0 WHERE id=?").run(req.params.id);
+  res.json({ ok: true });
+});
+app.post("/api/recorrencias/gerar", (req, res) => {
+  const { empresa_id, ano, mes } = req.body || {};
+  if (!empresa_id || !ano || !mes) return res.status(400).json({ error: "empresa_id, ano e mes são obrigatórios" });
+  if (!podeEmpresa(req, empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  const mm = String(mes).padStart(2, "0"), ym = `${ano}-${mm}`;
+  const recs = db.prepare("SELECT * FROM recorrencias WHERE ativa=1 AND empresa_id=?").all(empresa_id);
+  const jaExiste = db.prepare("SELECT COUNT(*) n FROM lancamentos WHERE recorrencia_id=@rid AND substr(data_competencia,1,7)=@ym");
+  const ins = db.prepare(`INSERT INTO lancamentos (empresa_id,unidade_id,conta_id,categoria_id,centro_custo_id,pessoa_id,tipo,descricao,data_competencia,data_vencimento,valor_liquido,valor_bruto,status,origem,recorrencia_id)
+    VALUES (@empresa_id,@unidade_id,@conta_id,@categoria_id,@centro_custo_id,@pessoa_id,@tipo,@descricao,@data,@data,@valor,@valor,'pendente','recorrente',@rid)`);
+  let gerados = 0, pulados = 0;
+  const tx = db.transaction(() => {
+    for (const r of recs) {
+      if (jaExiste.get({ rid: r.id, ym }).n > 0) { pulados++; continue; }
+      const dia = String(Math.min(28, r.dia_vencimento || 5)).padStart(2, "0");
+      ins.run({
+        empresa_id: r.empresa_id, unidade_id: r.unidade_id, conta_id: r.conta_id, categoria_id: r.categoria_id,
+        centro_custo_id: r.centro_custo_id, pessoa_id: r.pessoa_id, tipo: r.tipo, descricao: (r.descricao || "") + " (recorrente)",
+        data: `${ano}-${mm}-${dia}`, valor: r.valor, rid: r.id,
+      });
+      gerados++;
+    }
+  });
+  tx();
+  res.json({ gerados, pulados });
+});
+
+/* ------------------------------------------------------------------ */
 /* API — contas financeiras (CRUD + saldos)                            */
 /* ------------------------------------------------------------------ */
 app.get("/api/contas/saldos", (req, res) => {
   const emp = req.query.empresa_id ? Number(req.query.empresa_id) : null;
+  if (emp && !podeEmpresa(req, emp)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (!emp && !isAdmin(req)) return res.status(403).json({ error: "Selecione uma empresa." });
   res.json(db.prepare(`
     SELECT c.id, c.nome, c.banco, c.tipo, c.empresa_id, e.nome empresa_nome, c.saldo_inicial,
       c.saldo_inicial
@@ -315,6 +422,8 @@ app.get("/api/contas/saldos", (req, res) => {
     WHERE c.ativa=1 AND (@emp IS NULL OR c.empresa_id=@emp) ORDER BY e.ordem, c.nome`).all({ emp }));
 });
 app.get("/api/contas/:id/extrato", (req, res) => {
+  const c = db.prepare("SELECT empresa_id FROM contas_financeiras WHERE id=?").get(req.params.id);
+  if (c && !podeEmpresa(req, c.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   res.json(db.prepare(`
     SELECT l.*, e.nome empresa_nome, c.nome categoria_nome,
       CASE WHEN l.conta_destino_id=@id AND l.tipo='transferencia' THEN 'entrada_transf'
@@ -326,35 +435,56 @@ app.get("/api/contas/:id/extrato", (req, res) => {
 });
 app.post("/api/contas", (req, res) => {
   const b = req.body;
+  if (b.empresa_id && !podeEmpresa(req, b.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (!b.empresa_id && !isAdmin(req)) return res.status(403).json({ error: "Selecione uma empresa." });
   const r = db.prepare("INSERT INTO contas_financeiras (empresa_id,nome,banco,tipo,saldo_inicial) VALUES (?,?,?,?,?)")
     .run(b.empresa_id || null, b.nome, b.banco || null, b.tipo || "conta_corrente", num(b.saldo_inicial));
   res.json({ id: r.lastInsertRowid });
 });
 app.put("/api/contas/:id", (req, res) => {
   const b = req.body;
+  const c = db.prepare("SELECT empresa_id FROM contas_financeiras WHERE id=?").get(req.params.id);
+  if (c && !podeEmpresa(req, c.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  if (b.empresa_id && !podeEmpresa(req, b.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   db.prepare("UPDATE contas_financeiras SET empresa_id=?,nome=?,banco=?,tipo=?,saldo_inicial=? WHERE id=?")
     .run(b.empresa_id || null, b.nome, b.banco || null, b.tipo || "conta_corrente", num(b.saldo_inicial), req.params.id);
   res.json({ ok: true });
 });
 app.delete("/api/contas/:id", (req, res) => {
+  const c = db.prepare("SELECT empresa_id FROM contas_financeiras WHERE id=?").get(req.params.id);
+  if (c && !podeEmpresa(req, c.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   db.prepare("UPDATE contas_financeiras SET ativa=0 WHERE id=?").run(req.params.id);
   res.json({ ok: true });
 });
 
-// Usuários (listar / criar / atualizar)
-app.get("/api/usuarios", (req, res) =>
-  res.json(db.prepare("SELECT id,nome,email,perfil,ativo FROM usuarios ORDER BY nome").all()));
+// Usuários (admin) — listar / criar / atualizar / excluir + vínculo com empresas
+function setEmpresasUsuario(usuarioId, empresaIds) {
+  db.prepare("DELETE FROM permissoes_usuario_empresa WHERE usuario_id=?").run(usuarioId);
+  const ins = db.prepare("INSERT INTO permissoes_usuario_empresa (usuario_id,empresa_id,permissao) VALUES (?,?,'escrita')");
+  (empresaIds || []).forEach((eid) => { if (eid) ins.run(usuarioId, Number(eid)); });
+}
+app.get("/api/usuarios", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
+  res.json(db.prepare("SELECT id,nome,email,perfil,ativo FROM usuarios ORDER BY nome").all());
+});
+app.get("/api/usuarios/:id/empresas", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
+  res.json(empresasPermitidas(Number(req.params.id)));
+});
 app.post("/api/usuarios", (req, res) => {
-  const { nome, email, senha, perfil } = req.body || {};
+  if (!exigirAdmin(req, res)) return;
+  const { nome, email, senha, perfil, empresa_ids } = req.body || {};
   if (!nome || !email || !senha) return res.status(400).json({ error: "nome, email e senha são obrigatórios" });
   const existe = db.prepare("SELECT id FROM usuarios WHERE lower(email)=lower(?)").get(email);
   if (existe) return res.status(409).json({ error: "já existe usuário com esse e-mail" });
   const r = db.prepare("INSERT INTO usuarios (nome,email,senha_hash,perfil,ativo) VALUES (?,?,?,?,1)")
     .run(nome, email, auth.hashSenha(senha), perfil || "usuario");
+  if (perfil !== "admin") setEmpresasUsuario(r.lastInsertRowid, empresa_ids);
   res.json({ id: r.lastInsertRowid });
 });
 app.put("/api/usuarios/:id", (req, res) => {
-  const { nome, email, senha, perfil, ativo } = req.body || {};
+  if (!exigirAdmin(req, res)) return;
+  const { nome, email, senha, perfil, ativo, empresa_ids } = req.body || {};
   const u = db.prepare("SELECT * FROM usuarios WHERE id=?").get(req.params.id);
   if (!u) return res.status(404).json({ error: "usuário não encontrado" });
   if (email && email.toLowerCase() !== u.email.toLowerCase()) {
@@ -365,15 +495,20 @@ app.put("/api/usuarios/:id", (req, res) => {
     nome || u.nome, email || u.email, perfil || u.perfil,
     ativo == null ? u.ativo : (ativo ? 1 : 0),
     senha ? auth.hashSenha(senha) : u.senha_hash, req.params.id);
+  const perfilFinal = perfil || u.perfil;
+  if (perfilFinal === "admin") setEmpresasUsuario(req.params.id, []);
+  else if (empresa_ids !== undefined) setEmpresasUsuario(req.params.id, empresa_ids);
   res.json({ ok: true });
 });
 app.delete("/api/usuarios/:id", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
   const id = Number(req.params.id);
   if (req.usuario && req.usuario.id === id) return res.status(400).json({ error: "Você não pode excluir o próprio usuário logado." });
   const u = db.prepare("SELECT * FROM usuarios WHERE id=?").get(id);
   if (!u) return res.status(404).json({ error: "usuário não encontrado" });
   const admins = db.prepare("SELECT COUNT(*) n FROM usuarios WHERE perfil='admin' AND ativo=1").get().n;
   if (u.perfil === "admin" && admins <= 1) return res.status(400).json({ error: "Não é possível excluir o último administrador." });
+  db.prepare("DELETE FROM permissoes_usuario_empresa WHERE usuario_id=?").run(id);
   db.prepare("DELETE FROM sessoes WHERE usuario_id=?").run(id);
   db.prepare("DELETE FROM usuarios WHERE id=?").run(id);
   res.json({ ok: true });
@@ -381,10 +516,12 @@ app.delete("/api/usuarios/:id", (req, res) => {
 
 // POST simples de categorias e centros de custo
 app.post("/api/categorias", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
   const r = db.prepare("INSERT INTO categorias (nome,tipo) VALUES (?,?)").run(req.body.nome, req.body.tipo || "despesa");
   res.json({ id: r.lastInsertRowid });
 });
 app.post("/api/centros-custo", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
   const r = db.prepare("INSERT INTO centros_custo (empresa_id,nome) VALUES (?,?)").run(req.body.empresa_id || null, req.body.nome);
   res.json({ id: r.lastInsertRowid });
 });
@@ -393,6 +530,7 @@ app.post("/api/centros-custo", (req, res) => {
 /* API — dashboard consolidado e por empresa                          */
 /* ------------------------------------------------------------------ */
 app.get("/api/dashboard", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
   const anos = anosDisponiveis();
   const ano = Number(req.query.ano) || anos[0] || 2026;
   const sm = serieMensal(ano, null);
@@ -419,6 +557,7 @@ app.get("/api/dashboard", (req, res) => {
 
 app.get("/api/empresa/:id/dashboard", (req, res) => {
   const id = Number(req.params.id);
+  if (!podeEmpresa(req, id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const anos = anosDisponiveis();
   const ano = Number(req.query.ano) || anos[0] || 2026;
   const emp = db.prepare("SELECT * FROM empresas WHERE id=?").get(id);
