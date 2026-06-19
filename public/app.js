@@ -53,14 +53,23 @@ function toast(msg, tipo = "ok") {
 function confirmar(msg, { ok = "Excluir", cancel = "Cancelar", perigo = true } = {}) {
   return new Promise((resolve) => {
     const root = $("#modal-root");
-    root.innerHTML = `<div class="modal-bg"><div class="modal" style="max-width:420px">
+    const prevFocus = document.activeElement;
+    root.innerHTML = `<div class="modal-bg" id="cfBg"><div class="modal" role="alertdialog" aria-modal="true" style="max-width:420px">
       <h3>Tem certeza?</h3>
       <p style="color:var(--muted);margin:0">${msg}</p>
       <div class="modal-actions"><button class="btn" id="cfN">${cancel}</button><button class="btn ${perigo ? "danger" : "primary"}" id="cfY">${ok}</button></div>
     </div></div>`;
-    const close = (v) => { root.innerHTML = ""; resolve(v); };
-    $("#cfN").addEventListener("click", () => close(false));
-    $("#cfY").addEventListener("click", () => close(true));
+    const yes = $("#cfY"), no = $("#cfN");
+    const onKey = (e) => {
+      if (e.key === "Escape") close(false);
+      else if (e.key === "Tab") { e.preventDefault(); (document.activeElement === yes ? no : yes).focus(); }
+    };
+    const close = (v) => { document.removeEventListener("keydown", onKey); root.innerHTML = ""; if (prevFocus && prevFocus.focus) prevFocus.focus(); resolve(v); };
+    no.addEventListener("click", () => close(false));
+    yes.addEventListener("click", () => close(true));
+    $("#cfBg").addEventListener("click", (e) => { if (e.target.id === "cfBg") close(false); });
+    document.addEventListener("keydown", onKey);
+    yes.focus();
   });
 }
 
@@ -133,7 +142,11 @@ function renderNav() {
   if (lo) lo.addEventListener("click", (e) => { e.preventDefault(); logout(); });
 }
 function setActive(route) {
-  document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route));
+  document.querySelectorAll("#nav a").forEach((a) => {
+    const on = a.dataset.route === route;
+    a.classList.toggle("active", on);
+    if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
 }
 
 function route() {
@@ -179,7 +192,7 @@ function anoSelector(anos, anoAtual, onChange) {
 async function viewConsolidado(ano) {
   clearCharts();
   const view = $("#view");
-  view.innerHTML = "Carregando…";
+  view.innerHTML = skeletonDash();
   const d = await api("/api/dashboard" + (ano ? "?ano=" + ano : ""));
   STATE.anoSel = d.ano;
   view.innerHTML = "";
@@ -195,14 +208,14 @@ async function viewConsolidado(ano) {
   view.append(el(`<div class="note">Consolidado operacional exclui <b>Família</b> (distribuição compulsória).
     A <b>Agência dos Correios</b> aparece pelos valores que entram no Grupo; a visão 100%/40% está no card da Agência abaixo e na página da empresa.</div>`));
 
-  const k = d.kpis;
+  const k = d.kpis, a = d.anterior || {};
   const heroCls = k.resultadoAposFamilia >= 0 ? "pos" : "neg";
   view.append(el(`<div class="kpis">
-    ${kpi("Resultado após família", BRL(k.resultadoAposFamilia), k.resultadoAposFamilia >= 0 ? "superávit do grupo" : "déficit do grupo", heroCls, true)}
-    ${kpi("Faturamento", BRL(k.faturamento), "entradas consolidadas", "info")}
-    ${kpi("Custo / Despesa", BRL(k.custo), "saídas operacionais", "neg")}
-    ${kpi("Resultado operacional", BRL(k.resultadoOperacional), k.resultadoOperacional >= 0 ? "superávit" : "déficit", k.resultadoOperacional >= 0 ? "pos" : "neg")}
-    ${kpi("Distribuição familiar", BRL(k.distribuicaoFamiliar), "retiradas (compulsória)", "info")}
+    ${kpi("Resultado após família", BRL(k.resultadoAposFamilia), k.resultadoAposFamilia >= 0 ? "superávit do grupo" : "déficit do grupo", heroCls, true, trendPill(k.resultadoOperacional, a.resultadoOperacional, false, a.ano), `Resultado operacional menos a distribuição familiar.\nResultado operacional: ${BRL2(k.resultadoOperacional)}\n(−) Família: ${BRL2(k.distribuicaoFamiliar)}`)}
+    ${kpi("Faturamento", BRL(k.faturamento), "entradas consolidadas", "info", false, trendPill(k.faturamento, a.faturamento, false, a.ano), `Entradas de todas as frentes (exceto Família) em ${d.ano}.\n${a.ano}: ${BRL2(a.faturamento || 0)}`)}
+    ${kpi("Custo / Despesa", BRL(k.custo), "saídas operacionais", "neg", false, trendPill(k.custo, a.custo, true, a.ano), `Saídas operacionais consolidadas em ${d.ano}.\nNão inclui a distribuição familiar.\n${a.ano}: ${BRL2(a.custo || 0)}`)}
+    ${kpi("Resultado operacional", BRL(k.resultadoOperacional), k.resultadoOperacional >= 0 ? "superávit" : "déficit", k.resultadoOperacional >= 0 ? "pos" : "neg", false, "", `Faturamento − Custo (antes da família).`)}
+    ${kpi("Distribuição familiar", BRL(k.distribuicaoFamiliar), "retiradas (compulsória)", "info", false, "", `Retiradas da Família — distribuição compulsória que antecede o lucro.`)}
   </div>`));
 
   const grid = el(`<div class="grid">
@@ -261,7 +274,7 @@ function renderAgf(box, agf) {
 /* ====================== EMPRESA ====================== */
 async function viewEmpresa(id, ano) {
   clearCharts();
-  const view = $("#view"); view.innerHTML = "Carregando…";
+  const view = $("#view"); view.innerHTML = skeletonDash();
   const d = await api(`/api/empresa/${id}/dashboard` + (ano ? "?ano=" + ano : ""));
   if (d.error) { view.innerHTML = "Empresa não encontrada."; return; }
   view.innerHTML = "";
@@ -275,10 +288,11 @@ async function viewEmpresa(id, ano) {
   right.querySelector("#btnNovo").addEventListener("click", () => openLancModal({ empresa_id: id }, () => viewEmpresa(id, d.ano)));
 
   const k = d.kpis;
+  const a = d.anterior || {};
   view.append(el(`<div class="kpis">
-    ${kpi("Resultado", BRL(k.resultado), k.resultado >= 0 ? "superávit" : "déficit", k.resultado >= 0 ? "pos" : "neg", true)}
-    ${kpi("Faturamento", BRL(k.faturamento), "entradas", "info")}
-    ${kpi("Despesa", BRL(k.despesa), "saídas", "neg")}
+    ${kpi("Resultado", BRL(k.resultado), k.resultado >= 0 ? "superávit" : "déficit", k.resultado >= 0 ? "pos" : "neg", true, trendPill(k.resultado, a.resultado, false, a.ano))}
+    ${kpi("Faturamento", BRL(k.faturamento), "entradas", "info", false, trendPill(k.faturamento, a.faturamento, false, a.ano))}
+    ${kpi("Despesa", BRL(k.despesa), "saídas", "neg", false, trendPill(k.despesa, a.despesa, true, a.ano))}
     ${e.percentual_participacao < 100 ? kpi(`Atribuível ao Grupo (${e.percentual_participacao}%)`, BRL(k.resultadoAtribuivel), "participação", "pos") : ""}
   </div>`));
 
@@ -333,13 +347,13 @@ async function viewLancamentos(empresaId) {
     const rows = await api("/api/lancamentos?" + p.toString());
     $("#tLanc").innerHTML = `<thead><tr><th>Data</th><th>Empresa</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>Origem</th><th></th></tr></thead>
       <tbody>${rows.map((r) => `<tr>
-        <td>${(r.data_competencia||"").split("-").reverse().join("/")}</td>
-        <td>${r.empresa_nome}</td>
-        <td>${r.descricao||""}</td>
-        <td>${r.categoria_nome||"—"}</td>
-        <td><span class="pill ${r.tipo==='entrada'?'green':r.tipo==='saida'?'red':''}">${r.tipo}</span></td>
-        <td class="${r.tipo==='entrada'?'pos':r.tipo==='saida'?'neg':''}">${BRL2(r.valor_liquido)}</td>
-        <td><span class="pill">${r.origem}</span></td>
+        <td data-label="Data">${(r.data_competencia||"").split("-").reverse().join("/")}</td>
+        <td data-label="Empresa">${r.empresa_nome}</td>
+        <td data-label="Descrição">${r.descricao||""}</td>
+        <td data-label="Categoria">${r.categoria_nome||"—"}</td>
+        <td data-label="Tipo"><span class="pill ${r.tipo==='entrada'?'green':r.tipo==='saida'?'red':''}">${r.tipo}</span></td>
+        <td data-label="Valor" class="${r.tipo==='entrada'?'pos':r.tipo==='saida'?'neg':''}">${BRL2(r.valor_liquido)}</td>
+        <td data-label="Origem"><span class="pill">${r.origem}</span></td>
         <td data-label="Ações"><div class="row-actions"><button class="btn sm icon" aria-label="Editar lançamento" title="Editar" data-edit="${r.id}">✎</button><button class="btn sm icon red" aria-label="Excluir lançamento" title="Excluir" data-del="${r.id}">🗑</button></div></td>
       </tr>`).join("") || '<tr><td colspan=8><div class="empty"><div class="ic">💸</div>Nenhum lançamento ainda.</div></td></tr>'}</tbody>`;
     $("#tLanc").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", async () => {
@@ -959,13 +973,35 @@ async function openUsuarioModal(user, onSaved) {
 }
 
 /* ====================== helpers de UI/charts ====================== */
-function kpi(lbl, val, sub = "", cls = "", hero = false) { return `<div class="kpi ${cls} ${hero ? "hero" : ""}"><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>`; }
+function kpi(lbl, val, sub = "", cls = "", hero = false, trend = "", tip = "") {
+  const cap = [sub, trend].filter(Boolean).join(" · ");
+  const tt = tip ? ` data-tooltip="${String(tip).replace(/"/g, "&quot;")}"` : "";
+  return `<div class="kpi ${cls} ${hero ? "hero" : ""}"${tt}><div class="lbl">${lbl}</div><div class="val ${cls}">${val}</div>${cap ? `<div class="sub">${cap}</div>` : ""}</div>`;
+}
+// pílula de tendência vs período anterior. invert=true → aumento é ruim (ex.: custo)
+function trendPill(cur, prev, invert = false, anoPrev = "") {
+  if (prev == null || prev === 0 || !isFinite(prev)) return "";
+  const pct = ((cur - prev) / Math.abs(prev)) * 100;
+  const up = pct >= 0;
+  const bom = invert ? !up : up;
+  return `<span class="kpi-trend ${bom ? "up" : "down"}">${up ? "▲" : "▼"} ${Math.abs(pct).toFixed(0)}%</span>${anoPrev ? " vs " + anoPrev : ""}`;
+}
 function mesesComDados(sm) { let n = 0; for (let i = 0; i < 12; i++) if (sm.entrada[i] || sm.saida[i]) n = i + 1; return n || 12; }
+function skeletonDash() {
+  const cards = Array.from({ length: 5 }).map((_, i) => `<div class="kpi ${i === 0 ? "hero" : ""}"><div class="skeleton sk-text"></div><div class="skeleton sk-val"></div><div class="skeleton sk-text" style="width:45%"></div></div>`).join("");
+  return `<div class="topbar"><div class="skeleton" style="width:260px;height:24px"></div></div>
+    <div class="kpis">${cards}</div>
+    <div class="grid"><div class="card col-8"><div class="skeleton sk-line" style="width:40%"></div><div class="skeleton" style="height:260px;margin-top:12px;border-radius:8px"></div></div>
+    <div class="card col-4"><div class="skeleton sk-line" style="width:50%"></div><div class="skeleton" style="height:260px;margin-top:12px;border-radius:8px"></div></div></div>`;
+}
 function bar(label, data, color) { return { type: "bar", label, data, backgroundColor: color }; }
 function line(label, data, color) { return { type: "line", label, data, borderColor: color, backgroundColor: color, borderWidth: 2, tension: .3 }; }
 function lineBarCfg(labels, datasets) {
   return { data: { labels, datasets }, options: { maintainAspectRatio: false,
-    plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${BRL2(c.parsed.y)}` } } },
+    interaction: { mode: "index", intersect: false },
+    plugins: { tooltip: { backgroundColor: "#0D1117", borderColor: "#3A4756", borderWidth: 1, padding: 10, cornerRadius: 8,
+      titleColor: "#E6EDF5", bodyColor: "#8B98A5",
+      callbacks: { label: (c) => ` ${c.dataset.label}: ${BRL2(c.parsed.y)}` } } },
     scales: { y: { ticks: { callback: (v) => BRL(v) } } } } };
 }
 function doughnutCfg(labels, data) {

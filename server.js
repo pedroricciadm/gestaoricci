@@ -539,12 +539,15 @@ app.get("/api/dashboard", (req, res) => {
   const fatTot = sm.entrada.reduce((a, b) => a + b, 0);
   const custoTot = sm.saida.reduce((a, b) => a + b, 0); // já exclui Família (consolida=0)
   const familiaTot = fam ? fam.despesa : 0;
+  const ant = serieMensal(ano - 1, null);
+  const antFat = ant.entrada.reduce((a, b) => a + b, 0), antCusto = ant.saida.reduce((a, b) => a + b, 0);
   res.json({
     ano, anos,
     kpis: {
       faturamento: fatTot, custo: custoTot, resultadoOperacional: fatTot - custoTot,
       distribuicaoFamiliar: familiaTot, resultadoAposFamilia: fatTot - custoTot - familiaTot,
     },
+    anterior: { ano: ano - 1, faturamento: antFat, custo: antCusto, resultadoOperacional: antFat - antCusto },
     serieMensal: { meses: MESES, entrada: sm.entrada, saida: sm.saida,
       resultado: sm.entrada.map((v, i) => v - sm.saida[i]) },
     porEmpresa: empresas,
@@ -564,6 +567,8 @@ app.get("/api/empresa/:id/dashboard", (req, res) => {
   if (!emp) return res.status(404).json({ error: "empresa não encontrada" });
   const sm = serieMensal(ano, id);
   const fat = sm.entrada.reduce((a, b) => a + b, 0), desp = sm.saida.reduce((a, b) => a + b, 0);
+  const antE = serieMensal(ano - 1, id);
+  const antEFat = antE.entrada.reduce((a, b) => a + b, 0), antEDesp = antE.saida.reduce((a, b) => a + b, 0);
   // por unidade
   const porUnidade = db.prepare(`
     SELECT COALESCE(u.nome,'(sem unidade)') nome,
@@ -578,6 +583,7 @@ app.get("/api/empresa/:id/dashboard", (req, res) => {
     kpis: { faturamento: fat, despesa: desp, resultado: fat - desp,
       participacao: emp.percentual_participacao,
       resultadoAtribuivel: (fat - desp) * (emp.percentual_participacao / 100) },
+    anterior: { ano: ano - 1, faturamento: antEFat, despesa: antEDesp, resultado: antEFat - antEDesp },
     serieMensal: { meses: MESES, entrada: sm.entrada, saida: sm.saida, resultado: sm.entrada.map((v, i) => v - sm.saida[i]) },
     porCategoriaReceita: porCategoria(ano, "entrada", id),
     porCategoriaDespesa: porCategoria(ano, "saida", id),
