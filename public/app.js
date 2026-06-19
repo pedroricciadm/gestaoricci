@@ -337,16 +337,36 @@ async function viewLancamentos(empresaId) {
   view.append(tb);
   const tableCard = el(`<div class="card"><div class="scroll"><table id="tLanc" class="acts"></table></div></div>`);
   view.append(tableCard);
+  const pager = el(`<div class="pager"><span class="pager__info" id="pgInfo"></span><div class="pager__controls"><button class="btn sm" id="pgPrev">‹ Anterior</button><button class="btn sm" id="pgNext">Próxima ›</button></div></div>`);
+  view.append(pager);
+
+  let rows = [];
+  const st = { key: "data_competencia", dir: "desc", page: 1, perPage: 50 };
 
   async function load() {
     const p = new URLSearchParams();
-    p.set("empresa_id", empresaId);
+    p.set("empresa_id", empresaId); p.set("limit", "5000");
     if ($("#fAno").value) p.set("ano", $("#fAno").value);
     if ($("#fTipo").value) p.set("tipo", $("#fTipo").value);
     if ($("#fQ").value) p.set("q", $("#fQ").value);
-    const rows = await api("/api/lancamentos?" + p.toString());
-    $("#tLanc").innerHTML = `<thead><tr><th>Data</th><th>Empresa</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>Origem</th><th></th></tr></thead>
-      <tbody>${rows.map((r) => `<tr>
+    rows = await api("/api/lancamentos?" + p.toString());
+    st.page = 1; render();
+  }
+  function render() {
+    const mul = st.dir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      let x = a[st.key], y = b[st.key];
+      if (st.key === "valor_liquido") return ((x || 0) - (y || 0)) * mul;
+      return String(x || "").localeCompare(String(y || ""), "pt-BR") * mul;
+    });
+    const total = rows.reduce((s, r) => s + (r.tipo === "entrada" ? r.valor_liquido : r.tipo === "saida" ? -r.valor_liquido : 0), 0);
+    const start = (st.page - 1) * st.perPage, end = Math.min(start + st.perPage, rows.length);
+    const pageRows = rows.slice(start, end);
+    const th = (k, lbl) => `<th class="sortable ${st.key === k ? (st.dir === "asc" ? "sort-asc" : "sort-desc") : ""}" data-key="${k}">${lbl} <span class="sort-ind"></span></th>`;
+    $("#tLanc").innerHTML = `<thead><tr>
+        ${th("data_competencia", "Data")}${th("empresa_nome", "Empresa")}${th("descricao", "Descrição")}${th("categoria_nome", "Categoria")}
+        <th>Tipo</th>${th("valor_liquido", "Valor")}<th>Origem</th><th>Ações</th></tr></thead>
+      <tbody>${pageRows.map((r) => `<tr>
         <td data-label="Data">${(r.data_competencia||"").split("-").reverse().join("/")}</td>
         <td data-label="Empresa">${r.empresa_nome}</td>
         <td data-label="Descrição">${r.descricao||""}</td>
@@ -355,10 +375,15 @@ async function viewLancamentos(empresaId) {
         <td data-label="Valor" class="${r.tipo==='entrada'?'pos':r.tipo==='saida'?'neg':''}">${BRL2(r.valor_liquido)}</td>
         <td data-label="Origem"><span class="pill">${r.origem}</span></td>
         <td data-label="Ações"><div class="row-actions"><button class="btn sm icon" aria-label="Editar lançamento" title="Editar" data-edit="${r.id}">✎</button><button class="btn sm icon red" aria-label="Excluir lançamento" title="Excluir" data-del="${r.id}">🗑</button></div></td>
-      </tr>`).join("") || '<tr><td colspan=8><div class="empty"><div class="ic">💸</div>Nenhum lançamento ainda.</div></td></tr>'}</tbody>`;
-    $("#tLanc").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", async () => {
-      const r = rows.find((x) => x.id == b.dataset.edit); openLancModal(r, load);
+      </tr>`).join("") || '<tr><td colspan=8><div class="empty"><div class="ic">💸</div>Nenhum lançamento encontrado.</div></td></tr>'}</tbody>
+      ${rows.length ? `<tfoot><tr class="table-total"><td colspan="5">Total filtrado (líquido)</td><td class="${total>=0?'pos':'neg'}">${BRL2(total)}</td><td colspan="2"></td></tr></tfoot>` : ""}`;
+    $("#pgInfo").textContent = `Mostrando ${rows.length ? start + 1 : 0}–${end} de ${rows.length}`;
+    $("#pgPrev").disabled = st.page === 1;
+    $("#pgNext").disabled = end >= rows.length;
+    $("#tLanc").querySelectorAll(".sortable").forEach((h) => h.addEventListener("click", () => {
+      const k = h.dataset.key; st.dir = (st.key === k && st.dir === "asc") ? "desc" : "asc"; st.key = k; render();
     }));
+    $("#tLanc").querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => openLancModal(rows.find((x) => x.id == b.dataset.edit), load)));
     $("#tLanc").querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
       if (!(await confirmar("Excluir este lançamento? Esta ação não pode ser desfeita."))) return;
       const r = await fetch("/api/lancamentos/" + b.dataset.del, { method: "DELETE" }).then((x) => x.json());
@@ -366,6 +391,8 @@ async function viewLancamentos(empresaId) {
       toast("Lançamento excluído."); load();
     }));
   }
+  $("#pgPrev").addEventListener("click", () => { if (st.page > 1) { st.page--; render(); } });
+  $("#pgNext").addEventListener("click", () => { st.page++; render(); });
   [fAno, fTipo].forEach((f) => f.querySelector("select").addEventListener("change", load));
   fQ.querySelector("input").addEventListener("input", () => { clearTimeout(window._t); window._t = setTimeout(load, 300); });
   btnE.addEventListener("click", () => openLancModal({ tipo: "entrada", empresa_id: empresaId }, load));
@@ -881,34 +908,49 @@ async function viewCadastros() {
   ], async (v) => { await postJSON("/api/pessoas", v); STATE.pessoas = await api("/api/pessoas"); viewCadastros(); }));
 
   const unidades = STATE.unidades;
-  const tbl = (titulo, head, rows) => `<div class="card" style="margin-bottom:18px"><h2>${titulo}</h2>
-    <div class="scroll"><table><thead><tr>${head.map((h)=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div></div>`;
-  view.append(el(tbl("Empresas / Frentes", ["Nome","Tipo","Participação","Consolida"],
-    STATE.empresas.map((e)=>`<tr><td>${e.nome}</td><td>${e.tipo}</td><td>${e.percentual_participacao}%</td><td>${e.consolida?"Sim":"Não"}</td></tr>`).join(""))));
-  view.append(el(tbl("Unidades", ["Empresa","Unidade","Tipo"],
-    unidades.map((u)=>{const e=STATE.empresas.find((x)=>x.id===u.empresa_id);return `<tr><td>${e?e.nome:""}</td><td>${u.nome}</td><td>${u.tipo||""}</td></tr>`}).join(""))));
-  view.append(el(tbl("Contas financeiras", ["Conta","Banco","Tipo"],
-    STATE.contas.map((c)=>`<tr><td>${c.nome}</td><td>${c.banco||""}</td><td>${c.tipo||""}</td></tr>`).join(""))));
-  view.append(el(tbl("Categorias", ["Categoria","Tipo"],
-    STATE.categorias.map((c)=>`<tr><td>${c.nome}</td><td>${c.tipo}</td></tr>`).join(""))));
-  view.append(el(tbl("Centros de custo", ["Nome"], STATE.centros.map((c)=>`<tr><td>${c.nome}</td></tr>`).join(""))));
-  const usuariosRows = usuarios.map((u) => `<tr>
-      <td>${u.nome}</td><td>${u.email}</td><td>${u.perfil}</td><td>${u.ativo ? "Sim" : "Não"}</td>
-      <td><div class="row-actions"><button class="btn sm" data-uedit="${u.id}">✎ Editar</button> <button class="btn sm icon red" aria-label="Excluir usuário" title="Excluir" data-udel="${u.id}">🗑</button></div></td>
-    </tr>`).join("") || `<tr><td colspan=5 class="sub">Nenhum usuário.</td></tr>`;
-  const usuariosCard = el(tbl("Usuários do sistema", ["Nome", "E-mail", "Perfil", "Ativo", "Ações"], usuariosRows));
-  view.append(usuariosCard);
-  usuariosCard.querySelectorAll("[data-uedit]").forEach((b) => b.addEventListener("click", () => openUsuarioModal(usuarios.find((x) => x.id == b.dataset.uedit), viewCadastros)));
-  usuariosCard.querySelectorAll("[data-udel]").forEach((b) => b.addEventListener("click", async () => {
+  const tblInner = (head, rows, vazio) => `<div class="scroll"><table><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${head.length}"><div class="empty"><div class="ic">📋</div>${vazio || "Nada cadastrado."}</div></td></tr>`}</tbody></table></div>`;
+
+  const empresasInner = tblInner(["Nome", "Tipo", "Participação", "Consolida"],
+    STATE.empresas.map((e) => `<tr><td>${e.nome}</td><td><span class="pill">${e.tipo}</span></td><td>${e.percentual_participacao}%</td><td>${e.consolida ? '<span class="pill green">Sim</span>' : '<span class="pill amber">Não</span>'}</td></tr>`).join(""));
+  const unidadesInner = tblInner(["Empresa", "Unidade", "Tipo"],
+    unidades.map((u) => { const e = STATE.empresas.find((x) => x.id === u.empresa_id); return `<tr><td>${e ? e.nome : ""}</td><td>${u.nome}</td><td>${u.tipo || ""}</td></tr>`; }).join(""));
+  const contasInner = tblInner(["Conta", "Banco", "Tipo"],
+    STATE.contas.map((c) => `<tr><td>${c.nome}</td><td>${c.banco || ""}</td><td>${c.tipo || ""}</td></tr>`).join(""));
+  const categoriasInner = tblInner(["Categoria", "Tipo"],
+    STATE.categorias.map((c) => `<tr><td>${c.nome}</td><td><span class="pill ${c.tipo === "receita" ? "green" : c.tipo === "despesa" ? "red" : ""}">${c.tipo}</span></td></tr>`).join(""));
+  const centrosInner = tblInner(["Nome"], STATE.centros.map((c) => `<tr><td>${c.nome}</td></tr>`).join(""));
+  const usuariosInner = `<table class="acts"><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Ativo</th><th>Ações</th></tr></thead><tbody>${
+    usuarios.map((u) => `<tr><td>${u.nome}</td><td>${u.email}</td><td><span class="pill">${u.perfil}</span></td><td>${u.ativo ? "Sim" : "Não"}</td>
+      <td><div class="row-actions"><button class="btn sm" data-uedit="${u.id}">✎ Editar</button><button class="btn sm icon red" aria-label="Excluir usuário" title="Excluir" data-udel="${u.id}">🗑</button></div></td></tr>`).join("")
+    || `<tr><td colspan=5 class="sub">Nenhum usuário.</td></tr>`}</tbody></table>`;
+  const pessoasInner = tblInner(["Nome", "Tipo", "CPF/CNPJ", "Telefone"],
+    STATE.pessoas.map((p) => `<tr><td>${p.nome}</td><td>${p.tipo || ""}</td><td>${p.cpf_cnpj || ""}</td><td>${p.telefone || ""}</td></tr>`).join(""), "Nenhuma pessoa cadastrada.");
+
+  const defs = [
+    ["empresas", "Empresas", STATE.empresas.length, empresasInner],
+    ["unidades", "Unidades", unidades.length, unidadesInner],
+    ["contas", "Contas", STATE.contas.length, contasInner],
+    ["categorias", "Categorias", STATE.categorias.length, categoriasInner],
+    ["centros", "Centros de custo", STATE.centros.length, centrosInner],
+    ["usuarios", "Usuários", usuarios.length, usuariosInner],
+    ["pessoas", "Pessoas", STATE.pessoas.length, pessoasInner],
+  ];
+  const tabsNav = el(`<nav class="tabs" role="tablist">${defs.map((t, i) => `<button class="tab ${i === 0 ? "is-active" : ""}" role="tab" data-tab="${t[0]}">${t[1]} <span class="tab__count">${t[2]}</span></button>`).join("")}</nav>`);
+  const panels = el(`<div>${defs.map((t, i) => `<section class="tab-panel ${i === 0 ? "is-active" : ""}" data-panel="${t[0]}" role="tabpanel"><div class="card">${t[3]}</div></section>`).join("")}</div>`);
+  view.append(tabsNav, panels);
+  const activate = (tabEl) => {
+    tabsNav.querySelectorAll(".tab").forEach((t) => { const on = t === tabEl; t.classList.toggle("is-active", on); t.setAttribute("aria-selected", on); });
+    panels.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("is-active", p.dataset.panel === tabEl.dataset.tab));
+  };
+  tabsNav.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => activate(t)));
+  panels.querySelectorAll("[data-uedit]").forEach((b) => b.addEventListener("click", () => openUsuarioModal(usuarios.find((x) => x.id == b.dataset.uedit), viewCadastros)));
+  panels.querySelectorAll("[data-udel]").forEach((b) => b.addEventListener("click", async () => {
     const u = usuarios.find((x) => x.id == b.dataset.udel);
     if (!(await confirmar(`Excluir o usuário ${u.nome} (${u.email})? Esta ação não pode ser desfeita.`))) return;
     const r = await fetch("/api/usuarios/" + u.id, { method: "DELETE" }).then((x) => x.json());
     if (r.error) { toast(r.error, "err"); return; }
     toast("Usuário excluído."); viewCadastros();
   }));
-  view.append(el(tbl("Pessoas (clientes / fornecedores)", ["Nome","Tipo","CPF/CNPJ","Telefone"],
-    STATE.pessoas.map((p)=>`<tr><td>${p.nome}</td><td>${p.tipo||""}</td><td>${p.cpf_cnpj||""}</td><td>${p.telefone||""}</td></tr>`).join("")
-    || `<tr><td colspan=4 class="sub">Nenhuma pessoa cadastrada.</td></tr>`)));
 }
 
 /* Modal genérico simples (lista de campos -> objeto) */

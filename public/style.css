@@ -148,6 +148,30 @@ table.acts tbody tr:hover td:last-child{background:var(--panel2)}
   .scroll{max-height:none;overflow:visible}
 }
 
+/* abas internas */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;overflow-x:auto}
+.tab{display:inline-flex;align-items:center;gap:6px;padding:10px 14px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);font-size:13px;cursor:pointer;white-space:nowrap;font-family:inherit;transition:color .12s,border-color .12s}
+.tab:hover{color:var(--txt)}
+.tab.is-active{color:var(--txt);border-bottom-color:var(--accent);font-weight:600}
+.tab:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.tab__count{font-size:11px;padding:1px 7px;border-radius:999px;background:var(--panel2);color:var(--text-faint)}
+.tab.is-active .tab__count{background:var(--info-bg);color:var(--accent)}
+.panel-toolbar{display:flex;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap}
+.search-input{height:36px;min-width:220px;padding:0 12px}
+
+/* ordenação, total e paginação */
+.sortable{cursor:pointer;user-select:none}
+.sortable:hover{color:var(--txt)}
+.sort-ind::after{content:"↕";opacity:.4;margin-left:4px;font-size:10px}
+.sortable.sort-asc .sort-ind::after{content:"↑";opacity:1;color:var(--accent)}
+.sortable.sort-desc .sort-ind::after{content:"↓";opacity:1;color:var(--accent)}
+tfoot .table-total td{position:sticky;bottom:0;background:var(--panel);font-weight:700;border-top:1px solid var(--border-strong)}
+.pager{display:flex;align-items:center;justify-content:space-between;margin-top:12px;flex-wrap:wrap;gap:10px}
+.pager__info{color:var(--muted);font-size:12px}
+.pager__controls{display:flex;gap:8px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.badge--neutral,.pill.neutral{color:var(--muted)}
+
 .pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;background:var(--panel2);border:1px solid var(--line)}
 .pill.green{color:var(--success);border-color:var(--success-bd)}
 .pill.amber{color:var(--warning);border-color:rgba(227,160,8,.4)}
