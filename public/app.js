@@ -14,6 +14,11 @@ function chart(id, cfg) { const c = new Chart(id, cfg); CHARTS.push(c); return c
 const STATE = { empresas: [], categorias: [], contas: [], unidades: [], centros: [], pessoas: [], anoSel: null };
 
 async function boot() {
+  // checa autenticação
+  const me = await fetch("/api/me");
+  if (me.status === 401) return renderLogin();
+  STATE.usuario = await me.json();
+
   [STATE.empresas, STATE.categorias, STATE.contas, STATE.centros, STATE.pessoas, STATE.unidades] = await Promise.all([
     api("/api/empresas"), api("/api/categorias"), api("/api/contas"), api("/api/centros-custo"),
     api("/api/pessoas"), api("/api/unidades"),
@@ -22,6 +27,30 @@ async function boot() {
   window.addEventListener("hashchange", route);
   if (!location.hash) location.hash = "#/dashboard";
   route();
+}
+
+function renderLogin() {
+  document.querySelector(".app").style.display = "none";
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `<div class="login-wrap"><form class="login-card" id="loginForm">
+    <div class="login-brand">📊 Grupo RICCI<span>Sistema de Gestão</span></div>
+    <label class="fld">E-mail<input id="liEmail" type="email" autocomplete="username" required></label>
+    <label class="fld">Senha<input id="liSenha" type="password" autocomplete="current-password" required></label>
+    <div class="login-err" id="liErr"></div>
+    <button class="btn primary" type="submit" style="width:100%;margin-top:8px">Entrar</button>
+  </form></div>`;
+  document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: document.getElementById("liEmail").value, senha: document.getElementById("liSenha").value }) });
+    if (r.ok) { location.reload(); }
+    else { document.getElementById("liErr").textContent = "E-mail ou senha inválidos."; }
+  });
+}
+
+async function logout() {
+  await fetch("/api/logout", { method: "POST" });
+  location.reload();
 }
 
 function renderNav() {
@@ -39,7 +68,11 @@ function renderNav() {
     ${empresasLinks}
     <div class="nav-group">Administração</div>
     <a href="#/cadastros" data-route="cadastros">⚙️ Cadastros</a>
+    <div class="nav-group">${STATE.usuario ? STATE.usuario.nome : ""}</div>
+    <a href="#" id="navLogout">🚪 Sair</a>
   `;
+  const lo = document.getElementById("navLogout");
+  if (lo) lo.addEventListener("click", (e) => { e.preventDefault(); logout(); });
 }
 function setActive(route) {
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route));

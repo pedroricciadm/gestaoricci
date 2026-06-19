@@ -141,6 +141,13 @@ CREATE TABLE IF NOT EXISTS evolucao_anual (
   pagamentos REAL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS sessoes (
+  token TEXT PRIMARY KEY,
+  usuario_id INTEGER NOT NULL,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  FOREIGN KEY (usuario_id) REFERENCES usuarios(id)
+);
+
 CREATE TABLE IF NOT EXISTS permissoes_usuario_empresa (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   usuario_id INTEGER NOT NULL,

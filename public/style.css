@@ -71,3 +71,11 @@ tr.total td{font-weight:700;border-top:2px solid var(--line)}
 .form-grid .full{grid-column:span 2}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:18px}
 .toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap;margin-bottom:16px}
+
+/* Login */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.login-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:32px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px}
+.login-brand{font-size:22px;font-weight:700;text-align:center;margin-bottom:10px}
+.login-brand span{display:block;color:var(--muted);font-size:12px;font-weight:400;margin-top:4px}
+.login-card input{padding:11px 12px;font-size:14px}
+.login-err{color:var(--red);font-size:13px;min-height:18px}

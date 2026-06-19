@@ -7,6 +7,7 @@ const XLSX = require("xlsx");
 const path = require("path");
 const fs = require("fs");
 const db = require("./db");
+const auth = require("./auth");
 
 const PORT = process.env.PORT || 3500;
 const BASE = process.env.RICCI_BASE || "C:\\Users\\Win10\\OneDrive\\Documentos\\Projetos Cloud\\Gestão Ricci";
@@ -22,6 +23,42 @@ if (db.prepare("SELECT COUNT(*) n FROM empresas").get().n === 0) {
 
 const app = express();
 app.use(express.json());
+
+/* ------------------------------------------------------------------ */
+/* Autenticação                                                        */
+/* ------------------------------------------------------------------ */
+app.post("/api/login", (req, res) => {
+  const { email, senha } = req.body || {};
+  const u = db.prepare("SELECT * FROM usuarios WHERE lower(email)=lower(?) AND ativo=1").get(email || "");
+  if (!u || !auth.verifySenha(senha || "", u.senha_hash))
+    return res.status(401).json({ error: "E-mail ou senha inválidos" });
+  const token = auth.criarSessao(u.id);
+  const secure = req.headers["x-forwarded-proto"] === "https" ? " Secure;" : "";
+  res.setHeader("Set-Cookie", `ricci_sess=${token}; HttpOnly; Path=/; SameSite=Lax;${secure} Max-Age=2592000`);
+  res.json({ id: u.id, nome: u.nome, email: u.email, perfil: u.perfil });
+});
+
+app.post("/api/logout", (req, res) => {
+  auth.removerSessao(auth.tokenDoCookie(req));
+  res.setHeader("Set-Cookie", "ricci_sess=; HttpOnly; Path=/; Max-Age=0");
+  res.json({ ok: true });
+});
+
+app.get("/api/me", (req, res) => {
+  const u = auth.usuarioPorSessao(auth.tokenDoCookie(req));
+  if (!u) return res.status(401).json({ error: "não autenticado" });
+  res.json(u);
+});
+
+// protege as demais rotas /api/* (exceto login/logout/me acima e estáticos abaixo)
+app.use((req, res, next) => {
+  if (!req.path.startsWith("/api/")) return next();
+  const u = auth.usuarioPorSessao(auth.tokenDoCookie(req));
+  if (!u) return res.status(401).json({ error: "não autenticado" });
+  req.usuario = u;
+  next();
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 /* ------------------------------------------------------------------ */
