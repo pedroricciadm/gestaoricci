@@ -1,5 +1,7 @@
 node_modules/
 data/
+DOCUMENTACAO.md
+
 *.db
 *.db-wal
 *.db-shm
