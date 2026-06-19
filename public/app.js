@@ -80,6 +80,7 @@ function renderNav() {
     <div class="nav-group">Empresas / Frentes</div>
     ${empresasHtml}
     <div class="nav-group">Administração</div>
+    <a href="#/importar" data-route="importar">📥 Importar planilha</a>
     <a href="#/cadastros" data-route="cadastros">⚙️ Cadastros</a>
     <div class="nav-group">${STATE.usuario ? STATE.usuario.nome : ""}</div>
     <a href="#" id="navLogout">🚪 Sair</a>
@@ -117,6 +118,7 @@ function route() {
     return viewEmpresa(id);
   }
   if (h === "cadastros") return viewCadastros();
+  if (h === "importar") return viewImportar();
   viewConsolidado();
 }
 
@@ -570,6 +572,130 @@ async function viewRelatorioEmpresa(empresaId, ano) {
   if (d.porUnidade && d.porUnidade.length)
     view.append(el(`<div class="card"><h2>Por unidade</h2><table><thead><tr><th>Unidade</th><th>Receita</th><th>Despesa</th></tr></thead><tbody>${
       d.porUnidade.map((u) => `<tr><td>${u.nome}</td><td>${BRL(u.faturamento)}</td><td>${BRL(u.despesa)}</td></tr>`).join("")}</tbody></table></div>`));
+}
+
+/* ====================== IMPORTAR PLANILHA ====================== */
+async function viewImportar() {
+  const view = $("#view"); view.innerHTML = "";
+  view.append(el(`<div class="topbar"><div><h1>📥 Importar planilha</h1><div class="sub">Suba um Excel/CSV, mapeie as colunas e grave os lançamentos</div></div></div>`));
+  view.append(el(`<div class="note">A planilha é lida no seu navegador; só os lançamentos mapeados vão ao servidor. Cada importação fica marcada como origem "importacao-ui".</div>`));
+  const card = el(`<div class="card"></div>`);
+  card.innerHTML = `<div class="toolbar">
+      <label class="fld">Arquivo (.xlsx / .csv)<input type="file" id="impFile" accept=".xlsx,.xls,.csv"></label>
+      <label class="fld">Aba<select id="impSheet"></select></label>
+      <label class="fld">Linha do cabeçalho<input type="number" id="impHeader" value="1" min="1" style="width:90px"></label>
+    </div><div id="impMap"></div>`;
+  view.append(card);
+  const previewCard = el(`<div class="card" id="impPreviewCard" style="display:none;margin-top:18px"></div>`);
+  view.append(previewCard);
+
+  let workbook = null, rowsRaw = [];
+  const empOpts = STATE.empresas.filter((e) => e.tipo !== "grupo").map((e) => `<option value="${e.id}">${e.nome}</option>`).join("");
+
+  $("#impFile").addEventListener("change", async (ev) => {
+    const f = ev.target.files[0]; if (!f) return;
+    workbook = XLSX.read(await f.arrayBuffer(), { cellDates: true });
+    $("#impSheet").innerHTML = workbook.SheetNames.map((n) => `<option>${n}</option>`).join("");
+    montarMapeamento();
+  });
+  $("#impSheet").addEventListener("change", montarMapeamento);
+  $("#impHeader").addEventListener("change", montarMapeamento);
+
+  function lerLinhas() { return XLSX.utils.sheet_to_json(workbook.Sheets[$("#impSheet").value], { header: 1, raw: true, defval: null }); }
+
+  function montarMapeamento() {
+    if (!workbook) return;
+    rowsRaw = lerLinhas();
+    const hIdx = Math.max(0, (parseInt($("#impHeader").value) || 1) - 1);
+    const header = (rowsRaw[hIdx] || []).map((c, i) => (c == null || c === "") ? `Coluna ${i + 1}` : String(c));
+    const colOpts = `<option value="">—</option>` + header.map((c, i) => `<option value="${i}">${c}</option>`).join("");
+    const uniOpts = `<option value="">—</option>` + STATE.unidades.map((u) => `<option value="${u.id}" data-emp="${u.empresa_id}">${u.nome}</option>`).join("");
+    $("#impMap").innerHTML = `<h2 style="margin-top:6px">Mapeamento de colunas</h2>
+      <div class="form-grid">
+        <label class="fld">Empresa destino *<select id="mEmpresa">${empOpts}</select></label>
+        <label class="fld">Unidade (opcional)<select id="mUnidade">${uniOpts}</select></label>
+        <label class="fld">Tipo *<select id="mTipoFix"><option value="saida">Saída (despesa)</option><option value="entrada">Entrada (receita)</option></select></label>
+        <label class="fld">Status<select id="mStatusFix"><option value="confirmado">Confirmado</option><option value="pendente">Pendente</option><option value="pago">Pago</option><option value="recebido">Recebido</option></select></label>
+        <label class="fld">Coluna → Data competência *<select id="cData">${colOpts}</select></label>
+        <label class="fld">Coluna → Valor *<select id="cValor">${colOpts}</select></label>
+        <label class="fld">Coluna → Descrição<select id="cDesc">${colOpts}</select></label>
+        <label class="fld">Coluna → Categoria (nome)<select id="cCat">${colOpts}</select></label>
+        <label class="fld">Coluna → Vencimento<select id="cVenc">${colOpts}</select></label>
+        <label class="fld" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="mDedup" checked style="width:auto"> Evitar duplicados</label>
+      </div>
+      <div style="margin-top:14px;display:flex;gap:10px">
+        <button class="btn" id="btnPreview">Pré-visualizar</button>
+        <button class="btn primary" id="btnImportar">Importar</button>
+      </div>`;
+    $("#btnPreview").addEventListener("click", () => preview(false));
+    $("#btnImportar").addEventListener("click", () => preview(true));
+    $("#mEmpresa").addEventListener("change", () => {
+      const emp = $("#mEmpresa").value;
+      document.querySelectorAll("#mUnidade option[data-emp]").forEach((o) => o.style.display = o.dataset.emp === emp ? "" : "none");
+      $("#mUnidade").value = "";
+    });
+  }
+
+  function parseValor(v) {
+    if (v == null || v === "") return NaN;
+    if (typeof v === "number") return v;
+    let s = String(v).replace(/[R$\s]/g, "");
+    if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+    return parseFloat(s);
+  }
+  function parseData(v) {
+    if (v == null || v === "") return null;
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    const s = String(v).trim();
+    let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if (m) { let y = m[3]; if (y.length === 2) y = "20" + y; return `${y}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`; }
+    m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return m[0];
+    return null;
+  }
+  function montarLancamentos() {
+    const hIdx = Math.max(0, (parseInt($("#impHeader").value) || 1) - 1);
+    const ci = (id) => $("#" + id).value === "" ? null : parseInt($("#" + id).value);
+    const cData = ci("cData"), cValor = ci("cValor"), cDesc = ci("cDesc"), cCat = ci("cCat"), cVenc = ci("cVenc");
+    const empresa_id = parseInt($("#mEmpresa").value), unidade_id = $("#mUnidade").value || null, tipo = $("#mTipoFix").value, status = $("#mStatusFix").value;
+    const out = [];
+    rowsRaw.slice(hIdx + 1).forEach((r, idx) => {
+      if (!r || r.every((c) => c == null || c === "")) return;
+      const valor = cValor != null ? parseValor(r[cValor]) : NaN;
+      const data = cData != null ? parseData(r[cData]) : null;
+      out.push({
+        linha: hIdx + 2 + idx, empresa_id, unidade_id, tipo, status,
+        descricao: cDesc != null && r[cDesc] != null ? String(r[cDesc]) : "",
+        categoria_nome: cCat != null && r[cCat] != null ? String(r[cCat]) : null,
+        data_competencia: data, data_vencimento: cVenc != null ? parseData(r[cVenc]) : null,
+        valor_liquido: valor, _valido: (valor > 0 && !!data),
+      });
+    });
+    return out;
+  }
+  async function preview(commit) {
+    if (!$("#mEmpresa") || !$("#mEmpresa").value || $("#cData").value === "" || $("#cValor").value === "") { alert("Selecione Empresa, coluna de Data e coluna de Valor."); return; }
+    const lanc = montarLancamentos();
+    const validos = lanc.filter((l) => l._valido), invalidos = lanc.filter((l) => !l._valido);
+    const total = validos.reduce((s, l) => s + l.valor_liquido, 0);
+    previewCard.style.display = "block";
+    if (!commit) {
+      previewCard.innerHTML = `<h2>Pré-visualização</h2>
+        <div class="sub" style="margin-bottom:10px">${validos.length} válidos · ${invalidos.length} com problema · total ${BRL2(total)}</div>
+        <div class="scroll"><table><thead><tr><th>Linha</th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>OK?</th></tr></thead>
+        <tbody>${lanc.slice(0, 30).map((l) => `<tr><td>${l.linha}</td><td>${l.data_competencia || "—"}</td><td>${l.descricao || ""}</td><td>${l.categoria_nome || "—"}</td><td>${l.tipo}</td><td>${isFinite(l.valor_liquido) ? BRL2(l.valor_liquido) : "—"}</td><td>${l._valido ? "✅" : "⚠️"}</td></tr>`).join("")}</tbody></table></div>
+        ${lanc.length > 30 ? `<div class="sub">…e mais ${lanc.length - 30} linhas.</div>` : ""}`;
+      return;
+    }
+    if (!validos.length) { alert("Nenhuma linha válida para importar."); return; }
+    const empNome = STATE.empresas.find((e) => e.id == $("#mEmpresa").value).nome;
+    if (!confirm(`Importar ${validos.length} lançamentos em ${empNome}?`)) return;
+    const r = await postJSON("/api/importar", { lancamentos: validos, evitarDuplicados: $("#mDedup").checked });
+    if (r.error) { alert(r.error); return; }
+    previewCard.innerHTML = `<h2>Resultado da importação</h2>
+      <div class="kpis">${kpi("Inseridos", r.inserted)}${kpi("Ignorados (duplicados)", r.skipped)}${kpi("Com erro", r.totalErros || 0)}</div>
+      <div class="sub">Os lançamentos já aparecem nas telas de ${empNome}.</div>`;
+    STATE.categorias = await api("/api/categorias");
+  }
 }
 
 /* ====================== CADASTROS ====================== */

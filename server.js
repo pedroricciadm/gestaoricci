@@ -249,6 +249,55 @@ app.post("/api/lancamentos/:id/baixar", (req, res) => {
   res.json({ ok: true });
 });
 
+// Importação de planilha (recebe lançamentos já mapeados em JSON)
+app.post("/api/importar", (req, res) => {
+  const { lancamentos, evitarDuplicados } = req.body || {};
+  if (!Array.isArray(lancamentos) || !lancamentos.length)
+    return res.status(400).json({ error: "Nada para importar." });
+
+  // cache de categorias por nome (resolve ou cria)
+  const catByNome = {};
+  for (const c of db.prepare("SELECT id,nome FROM categorias").all()) catByNome[c.nome.trim().toLowerCase()] = c.id;
+  const getCatId = (nome, tipo) => {
+    if (!nome) return null;
+    const k = String(nome).trim().toLowerCase();
+    if (catByNome[k]) return catByNome[k];
+    const r = db.prepare("INSERT INTO categorias (nome,tipo) VALUES (?,?)").run(String(nome).trim(), tipo === "entrada" ? "receita" : "despesa");
+    catByNome[k] = r.lastInsertRowid;
+    return r.lastInsertRowid;
+  };
+
+  const ins = db.prepare(`INSERT INTO lancamentos
+    (empresa_id,unidade_id,categoria_id,tipo,descricao,data_competencia,data_vencimento,valor_liquido,valor_bruto,status,origem)
+    VALUES (@empresa_id,@unidade_id,@categoria_id,@tipo,@descricao,@data_competencia,@data_vencimento,@valor,@valor,@status,'importacao-ui')`);
+  const dupCheck = db.prepare(`SELECT COUNT(*) n FROM lancamentos
+    WHERE empresa_id=@empresa_id AND data_competencia=@data_competencia
+      AND round(valor_liquido,2)=round(@valor,2) AND IFNULL(descricao,'')=IFNULL(@descricao,'')`);
+
+  let inserted = 0, skipped = 0; const errors = [];
+  const tx = db.transaction(() => {
+    lancamentos.forEach((l, i) => {
+      const valor = Number(l.valor_liquido);
+      if (!l.empresa_id || !l.tipo || !l.data_competencia || !(valor > 0)) {
+        errors.push({ linha: l.linha || i + 1, motivo: "empresa/tipo/data/valor inválidos" });
+        return;
+      }
+      const rec = {
+        empresa_id: l.empresa_id, unidade_id: l.unidade_id || null,
+        categoria_id: l.categoria_id || getCatId(l.categoria_nome, l.tipo),
+        tipo: l.tipo, descricao: l.descricao || "", data_competencia: l.data_competencia,
+        data_vencimento: l.data_vencimento || null, valor, status: l.status || "confirmado",
+      };
+      if (evitarDuplicados && dupCheck.get({ empresa_id: rec.empresa_id, data_competencia: rec.data_competencia, valor, descricao: rec.descricao }).n > 0) {
+        skipped++; return;
+      }
+      ins.run(rec); inserted++;
+    });
+  });
+  tx();
+  res.json({ inserted, skipped, totalErros: errors.length, errors: errors.slice(0, 50) });
+});
+
 /* ------------------------------------------------------------------ */
 /* API — contas financeiras (CRUD + saldos)                            */
 /* ------------------------------------------------------------------ */
