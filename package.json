@@ -1,0 +1,20 @@
+{
+  "name": "gestao-ricci-app",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "inspect": "node scripts/inspect.js",
+    "dump": "node scripts/dump.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "express": "^5.2.1",
+    "xlsx": "^0.18.5"
+  }
+}
