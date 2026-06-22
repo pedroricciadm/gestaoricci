@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+<a href="#view" class="skip-link">Pular para o conteúdo</a>
 <div class="app" id="app">
   <button class="menu-toggle" id="menuToggle" aria-label="Abrir menu">☰</button>
   <aside class="sidebar" id="sidebar">
@@ -16,7 +17,7 @@
     <nav class="nav" id="nav"></nav>
   </aside>
   <div class="overlay" id="overlay"></div>
-  <main class="content" id="view">Carregando…</main>
+  <main class="content" id="view" tabindex="-1">Carregando…</main>
 </div>
 <div id="modal-root"></div>
 <div id="toasts"></div>

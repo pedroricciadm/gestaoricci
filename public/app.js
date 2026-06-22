@@ -496,14 +496,20 @@ async function viewCaixa(empresaId) {
   bNova.addEventListener("click", () => openContaModal({ empresa_id: empresaId }, refresh));
 
   const totalCaixa = saldos.reduce((s, c) => s + (c.saldo || 0), 0);
-  view.append(el(`<div class="kpis">${kpi("Saldo total (contas ativas)", BRL(totalCaixa), saldos.length + " contas")}</div>`));
+  view.append(el(`<div class="kpis">${kpi("Saldo total (contas ativas)", BRL(totalCaixa), saldos.length + " contas", totalCaixa >= 0 ? "pos" : "neg", true)}</div>`));
 
+  const bankIcon = (c) => {
+    const t = (c.tipo || "") + " " + (c.nome || "") + " " + (c.banco || "");
+    if (/caixa|dinheiro/i.test(t)) return "💵";
+    if (/aplica/i.test(c.tipo || "")) return "📈";
+    return "🏦";
+  };
   const cards = el(`<div class="grid"></div>`);
   for (const c of saldos) {
     const card = el(`<div class="card col-4">
-      <h2>${c.nome} ${c.banco ? `<span class="pill">${c.banco}</span>` : ""}</h2>
+      <h2>${bankIcon(c)} ${c.nome} ${c.banco ? `<span class="pill">${c.banco}</span>` : ""}</h2>
       <div class="kpi" style="border:none;padding:0">
-        <div class="val ${c.saldo>=0?'pos':'neg'}">${BRL2(c.saldo)}</div>
+        <div class="val ${c.saldo>0?'pos':c.saldo<0?'neg':''}">${BRL2(c.saldo)}</div>
         <div class="sub">${c.empresa_nome || "—"} · ${c.movimentos} mov. · inicial ${BRL(c.saldo_inicial)}</div>
       </div>
       <div style="margin-top:12px;display:flex;gap:8px">
@@ -759,40 +765,69 @@ async function viewRelatorioEmpresa(empresaId, ano) {
 /* ====================== IMPORTAR PLANILHA ====================== */
 async function viewImportar() {
   const view = $("#view"); view.innerHTML = "";
-  view.append(el(`<div class="topbar"><div><h1>📥 Importar planilha</h1><div class="sub">Suba um Excel/CSV, mapeie as colunas e grave os lançamentos</div></div></div>`));
-  view.append(el(`<div class="note">A planilha é lida no seu navegador; só os lançamentos mapeados vão ao servidor. Cada importação fica marcada como origem "importacao-ui".</div>`));
-  const card = el(`<div class="card"></div>`);
-  card.innerHTML = `<div class="toolbar">
-      <label class="fld">Arquivo (.xlsx / .csv)<input type="file" id="impFile" accept=".xlsx,.xls,.csv"></label>
-      <label class="fld">Aba<select id="impSheet"></select></label>
-      <label class="fld">Linha do cabeçalho<input type="number" id="impHeader" value="1" min="1" style="width:90px"></label>
-    </div><div id="impMap"></div>`;
-  view.append(card);
-  const previewCard = el(`<div class="card" id="impPreviewCard" style="display:none;margin-top:18px"></div>`);
-  view.append(previewCard);
-
-  let workbook = null, rowsRaw = [];
+  view.append(el(`<div class="topbar"><div><h1>📥 Importar planilha</h1><div class="sub">Excel/CSV lido no navegador; só os lançamentos mapeados vão ao servidor</div></div></div>`));
   const empOpts = STATE.empresas.filter((e) => e.tipo !== "grupo").map((e) => `<option value="${e.id}">${e.nome}</option>`).join("");
+  const passos = ["Enviar arquivo", "Mapear colunas", "Revisar", "Confirmar"];
+  const wiz = el(`<section class="wizard">
+    <ol class="wizard__steps">${passos.map((p, i) => `<li class="wizard__step ${i === 0 ? "is-active" : ""}" data-step="${i + 1}"><span class="wizard__num">${i + 1}</span> ${p}</li>`).join("")}</ol>
+    <div class="wizard__panel is-active" data-panel="1">
+      <label class="dropzone" id="impDrop"><input type="file" id="impFile" accept=".xlsx,.xls,.csv" hidden>
+        <div class="dropzone__icon">📄</div>
+        <div class="dropzone__text">Arraste o Excel/CSV aqui ou <u>clique para escolher</u></div>
+        <div class="dropzone__hint">Formatos: .xlsx, .xls, .csv</div></label>
+      <div id="impChip"></div>
+      <div class="form-grid" id="impFileOpts" style="display:none;margin-top:14px">
+        <label class="fld">Aba<select id="impSheet"></select></label>
+        <label class="fld">Linha do cabeçalho<input type="number" id="impHeader" value="1" min="1"></label>
+      </div>
+    </div>
+    <div class="wizard__panel" data-panel="2"><div id="impMap"></div></div>
+    <div class="wizard__panel" data-panel="3"><div id="impReview"><p class="sub">Revise antes de gravar.</p></div></div>
+    <div class="wizard__panel" data-panel="4"><div id="impResult"></div></div>
+    <div class="wizard__nav"><button class="btn" id="wzBack" disabled>‹ Voltar</button><button class="btn primary" id="wzNext">Continuar ›</button></div>
+  </section>`);
+  view.append(wiz);
 
-  $("#impFile").addEventListener("change", async (ev) => {
+  let workbook = null, rowsRaw = [], step = 1, ultimaImportacao = null;
+
+  function go(n) {
+    step = Math.min(4, Math.max(1, n));
+    wiz.querySelectorAll(".wizard__step").forEach((s) => { const i = +s.dataset.step; s.classList.toggle("is-active", i === step); s.classList.toggle("is-done", i < step); });
+    wiz.querySelectorAll(".wizard__panel").forEach((p) => p.classList.toggle("is-active", +p.dataset.panel === step));
+    $("#wzBack").disabled = step === 1 || step === 4;
+    $("#wzNext").textContent = step === 3 ? "Importar" : step === 4 ? "Nova importação" : "Continuar ›";
+    $("#wzNext").className = step === 3 ? "btn green" : "btn primary";
+  }
+  $("#wzBack").addEventListener("click", () => go(step - 1));
+  $("#wzNext").addEventListener("click", async () => {
+    if (step === 1) { if (!workbook) { toast("Selecione um arquivo primeiro.", "err"); return; } montarMapeamento(); go(2); }
+    else if (step === 2) { if (!montarReview()) return; go(3); }
+    else if (step === 3) { await commit(); }
+    else if (step === 4) { viewImportar(); }
+  });
+
+  // dropzone + chip
+  const drop = $("#impDrop"), fileInput = $("#impFile");
+  ["dragover", "dragenter"].forEach((e) => drop.addEventListener(e, (ev) => { ev.preventDefault(); drop.classList.add("is-dragover"); }));
+  ["dragleave", "drop"].forEach((e) => drop.addEventListener(e, () => drop.classList.remove("is-dragover")));
+  drop.addEventListener("drop", (ev) => { ev.preventDefault(); if (ev.dataTransfer.files[0]) { fileInput.files = ev.dataTransfer.files; fileInput.dispatchEvent(new Event("change")); } });
+  fileInput.addEventListener("change", async (ev) => {
     const f = ev.target.files[0]; if (!f) return;
     workbook = XLSX.read(await f.arrayBuffer(), { cellDates: true });
     $("#impSheet").innerHTML = workbook.SheetNames.map((n) => `<option>${n}</option>`).join("");
-    montarMapeamento();
+    $("#impFileOpts").style.display = "grid";
+    $("#impChip").innerHTML = `<div class="file-chip"><span>📑</span><span>${f.name}</span><span class="file-chip__size">${(f.size / 1024).toFixed(0)} KB</span></div>`;
   });
-  $("#impSheet").addEventListener("change", montarMapeamento);
-  $("#impHeader").addEventListener("change", montarMapeamento);
 
   function lerLinhas() { return XLSX.utils.sheet_to_json(workbook.Sheets[$("#impSheet").value], { header: 1, raw: true, defval: null }); }
 
   function montarMapeamento() {
-    if (!workbook) return;
     rowsRaw = lerLinhas();
     const hIdx = Math.max(0, (parseInt($("#impHeader").value) || 1) - 1);
     const header = (rowsRaw[hIdx] || []).map((c, i) => (c == null || c === "") ? `Coluna ${i + 1}` : String(c));
     const colOpts = `<option value="">—</option>` + header.map((c, i) => `<option value="${i}">${c}</option>`).join("");
     const uniOpts = `<option value="">—</option>` + STATE.unidades.map((u) => `<option value="${u.id}" data-emp="${u.empresa_id}">${u.nome}</option>`).join("");
-    $("#impMap").innerHTML = `<h2 style="margin-top:6px">Mapeamento de colunas</h2>
+    $("#impMap").innerHTML = `<p class="sub" style="margin:0 0 14px">Associe cada coluna da planilha a um campo do sistema.</p>
       <div class="form-grid">
         <label class="fld">Empresa destino *<select id="mEmpresa">${empOpts}</select></label>
         <label class="fld">Unidade (opcional)<select id="mUnidade">${uniOpts}</select></label>
@@ -804,18 +839,42 @@ async function viewImportar() {
         <label class="fld">Coluna → Categoria (nome)<select id="cCat">${colOpts}</select></label>
         <label class="fld">Coluna → Vencimento<select id="cVenc">${colOpts}</select></label>
         <label class="fld" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="mDedup" checked style="width:auto"> Evitar duplicados</label>
-      </div>
-      <div style="margin-top:14px;display:flex;gap:10px">
-        <button class="btn" id="btnPreview">Pré-visualizar</button>
-        <button class="btn primary" id="btnImportar">Importar</button>
       </div>`;
-    $("#btnPreview").addEventListener("click", () => preview(false));
-    $("#btnImportar").addEventListener("click", () => preview(true));
     $("#mEmpresa").addEventListener("change", () => {
       const emp = $("#mEmpresa").value;
       document.querySelectorAll("#mUnidade option[data-emp]").forEach((o) => o.style.display = o.dataset.emp === emp ? "" : "none");
       $("#mUnidade").value = "";
     });
+  }
+
+  function montarReview() {
+    if (!$("#mEmpresa") || !$("#mEmpresa").value || $("#cData").value === "" || $("#cValor").value === "") { toast("Selecione Empresa, coluna de Data e coluna de Valor.", "err"); return false; }
+    const lanc = montarLancamentos();
+    const validos = lanc.filter((l) => l._valido), invalidos = lanc.filter((l) => !l._valido);
+    const total = validos.reduce((s, l) => s + l.valor_liquido, 0);
+    $("#impReview").innerHTML = `
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+        <span class="pill green">${validos.length} válidos</span>
+        <span class="pill ${invalidos.length ? "red" : ""}">${invalidos.length} com problema</span>
+        <span class="pill">total ${BRL2(total)}</span></div>
+      <div class="scroll"><table><thead><tr><th>Linha</th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>OK?</th></tr></thead>
+      <tbody>${lanc.slice(0, 50).map((l) => `<tr><td>${l.linha}</td><td class="${l.data_competencia ? "" : "neg"}">${l.data_competencia || "inválida"}</td><td>${l.descricao || ""}</td><td>${l.categoria_nome || "—"}</td><td>${l.tipo}</td><td class="${isFinite(l.valor_liquido) && l.valor_liquido > 0 ? "" : "neg"}">${isFinite(l.valor_liquido) ? BRL2(l.valor_liquido) : "inválido"}</td><td>${l._valido ? "✅" : "⚠️"}</td></tr>`).join("")}</tbody></table></div>
+      ${lanc.length > 50 ? `<div class="sub">…e mais ${lanc.length - 50} linhas.</div>` : ""}`;
+    ultimaImportacao = validos;
+    return true;
+  }
+
+  async function commit() {
+    if (!ultimaImportacao || !ultimaImportacao.length) { toast("Nenhuma linha válida.", "err"); return; }
+    const empNome = STATE.empresas.find((e) => e.id == $("#mEmpresa").value).nome;
+    const r = await postJSON("/api/importar", { lancamentos: ultimaImportacao, evitarDuplicados: $("#mDedup").checked });
+    if (r.error) { toast(r.error, "err"); return; }
+    STATE.categorias = await api("/api/categorias");
+    $("#impResult").innerHTML = `<div class="empty"><div class="ic">✅</div>
+      <b>Importação concluída em ${empNome}</b></div>
+      <div class="kpis">${kpi("Inseridos", r.inserted, "", "pos")}${kpi("Ignorados (duplicados)", r.skipped, "", "info")}${kpi("Com erro", r.totalErros || 0, "", r.totalErros ? "neg" : "")}</div>`;
+    toast(`Importação concluída: ${r.inserted} inseridos.`);
+    go(4);
   }
 
   function parseValor(v) {
@@ -853,30 +912,6 @@ async function viewImportar() {
       });
     });
     return out;
-  }
-  async function preview(commit) {
-    if (!$("#mEmpresa") || !$("#mEmpresa").value || $("#cData").value === "" || $("#cValor").value === "") { alert("Selecione Empresa, coluna de Data e coluna de Valor."); return; }
-    const lanc = montarLancamentos();
-    const validos = lanc.filter((l) => l._valido), invalidos = lanc.filter((l) => !l._valido);
-    const total = validos.reduce((s, l) => s + l.valor_liquido, 0);
-    previewCard.style.display = "block";
-    if (!commit) {
-      previewCard.innerHTML = `<h2>Pré-visualização</h2>
-        <div class="sub" style="margin-bottom:10px">${validos.length} válidos · ${invalidos.length} com problema · total ${BRL2(total)}</div>
-        <div class="scroll"><table><thead><tr><th>Linha</th><th>Data</th><th>Descrição</th><th>Categoria</th><th>Tipo</th><th>Valor</th><th>OK?</th></tr></thead>
-        <tbody>${lanc.slice(0, 30).map((l) => `<tr><td>${l.linha}</td><td>${l.data_competencia || "—"}</td><td>${l.descricao || ""}</td><td>${l.categoria_nome || "—"}</td><td>${l.tipo}</td><td>${isFinite(l.valor_liquido) ? BRL2(l.valor_liquido) : "—"}</td><td>${l._valido ? "✅" : "⚠️"}</td></tr>`).join("")}</tbody></table></div>
-        ${lanc.length > 30 ? `<div class="sub">…e mais ${lanc.length - 30} linhas.</div>` : ""}`;
-      return;
-    }
-    if (!validos.length) { alert("Nenhuma linha válida para importar."); return; }
-    const empNome = STATE.empresas.find((e) => e.id == $("#mEmpresa").value).nome;
-    if (!confirm(`Importar ${validos.length} lançamentos em ${empNome}?`)) return;
-    const r = await postJSON("/api/importar", { lancamentos: validos, evitarDuplicados: $("#mDedup").checked });
-    if (r.error) { alert(r.error); return; }
-    previewCard.innerHTML = `<h2>Resultado da importação</h2>
-      <div class="kpis">${kpi("Inseridos", r.inserted)}${kpi("Ignorados (duplicados)", r.skipped)}${kpi("Com erro", r.totalErros || 0)}</div>
-      <div class="sub">Os lançamentos já aparecem nas telas de ${empNome}.</div>`;
-    STATE.categorias = await api("/api/categorias");
   }
 }
 
@@ -936,8 +971,14 @@ async function viewCadastros() {
     ["pessoas", "Pessoas", STATE.pessoas.length, pessoasInner],
   ];
   const tabsNav = el(`<nav class="tabs" role="tablist">${defs.map((t, i) => `<button class="tab ${i === 0 ? "is-active" : ""}" role="tab" data-tab="${t[0]}">${t[1]} <span class="tab__count">${t[2]}</span></button>`).join("")}</nav>`);
-  const panels = el(`<div>${defs.map((t, i) => `<section class="tab-panel ${i === 0 ? "is-active" : ""}" data-panel="${t[0]}" role="tabpanel"><div class="card">${t[3]}</div></section>`).join("")}</div>`);
+  const panels = el(`<div>${defs.map((t, i) => `<section class="tab-panel ${i === 0 ? "is-active" : ""}" data-panel="${t[0]}" role="tabpanel">
+    <div class="panel-toolbar"><input class="search-input" type="search" placeholder="Buscar em ${t[1].toLowerCase()}…" data-search></div>
+    <div class="card">${t[3]}</div></section>`).join("")}</div>`);
   view.append(tabsNav, panels);
+  panels.querySelectorAll("[data-search]").forEach((inp) => inp.addEventListener("input", () => {
+    const q = inp.value.toLowerCase();
+    inp.closest(".tab-panel").querySelectorAll("tbody tr").forEach((tr) => { tr.style.display = tr.textContent.toLowerCase().includes(q) ? "" : "none"; });
+  }));
   const activate = (tabEl) => {
     tabsNav.querySelectorAll(".tab").forEach((t) => { const on = t === tabEl; t.classList.toggle("is-active", on); t.setAttribute("aria-selected", on); });
     panels.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("is-active", p.dataset.panel === tabEl.dataset.tab));
