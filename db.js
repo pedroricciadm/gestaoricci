@@ -204,4 +204,18 @@ CREATE TABLE IF NOT EXISTS auditoria (
 CREATE INDEX IF NOT EXISTS idx_aud_entidade ON auditoria(entidade, entidade_id);
 `);
 
+// Migração idempotente: empresa pode consolidar no grupo SÓ por uma categoria.
+// Caso AGF: entra no consolidado apenas pela distribuição de lucros realmente paga ao grupo
+// (os demais recebimentos — Comissão/Taxas — são operação da própria AGF, não do grupo).
+const _empCols = db.prepare("PRAGMA table_info(empresas)").all().map((c) => c.name);
+if (!_empCols.includes("consolida_categoria_id")) {
+  db.exec("ALTER TABLE empresas ADD COLUMN consolida_categoria_id INTEGER");
+}
+try {
+  const distrib = db.prepare("SELECT id FROM categorias WHERE lower(nome)='distribuição'").get();
+  if (distrib) {
+    db.prepare("UPDATE empresas SET consolida_categoria_id=? WHERE lower(nome)='agência dos correios' AND consolida_categoria_id IS NULL").run(distrib.id);
+  }
+} catch (_) { /* categoria ainda não existe na 1ª carga; seed/import resolvem depois */ }
+
 module.exports = db;
