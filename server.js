@@ -122,7 +122,7 @@ function serieMensal(ano, empresaId) {
     FROM lancamentos l
     JOIN empresas e ON e.id=l.empresa_id
     WHERE l.deletado=0 ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
-      ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1 AND (e.consolida_categoria_id IS NULL OR l.categoria_id=e.consolida_categoria_id)"}
+      ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1"}
     GROUP BY mes, l.tipo
   `).all({ ano: String(ano), empresaId });
   const entrada = Array(12).fill(0), saida = Array(12).fill(0);
@@ -141,9 +141,7 @@ function porEmpresa(ano) {
       SUM(CASE WHEN l.tipo='entrada' THEN l.valor_liquido ELSE 0 END) faturamento,
       SUM(CASE WHEN l.tipo='saida' THEN l.valor_liquido ELSE 0 END) despesa
     FROM empresas e
-    LEFT JOIN lancamentos l ON l.empresa_id=e.id AND l.deletado=0
-      AND (e.consolida_categoria_id IS NULL OR l.categoria_id=e.consolida_categoria_id)
-      ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
+    LEFT JOIN lancamentos l ON l.empresa_id=e.id AND l.deletado=0 ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
     WHERE e.tipo!='grupo'
     GROUP BY e.id
     ORDER BY e.ordem
@@ -161,7 +159,7 @@ function porCategoria(ano, tipo, empresaId) {
     JOIN categorias c ON c.id=l.categoria_id
     JOIN empresas e ON e.id=l.empresa_id
     WHERE l.deletado=0 AND l.tipo=@tipo ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
-      ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1 AND (e.consolida_categoria_id IS NULL OR l.categoria_id=e.consolida_categoria_id)"}
+      ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1"}
     GROUP BY c.id ORDER BY total DESC
   `).all({ ano: String(ano), tipo, empresaId }).map((r) => ({ nome: r.nome, total: num(r.total) }));
 }
