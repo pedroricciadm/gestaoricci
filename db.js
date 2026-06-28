@@ -183,5 +183,25 @@ const _lancCols = db.prepare("PRAGMA table_info(lancamentos)").all().map((c) => 
 if (!_lancCols.includes("recorrencia_id")) {
   db.exec("ALTER TABLE lancamentos ADD COLUMN recorrencia_id INTEGER");
 }
+// Migração idempotente: soft delete em lancamentos (preserva histórico em vez de apagar)
+if (!_lancCols.includes("deletado")) {
+  db.exec("ALTER TABLE lancamentos ADD COLUMN deletado INTEGER DEFAULT 0");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_lanc_deletado ON lancamentos(deletado)");
+
+// Trilha de auditoria: quem fez o quê, quando (ações financeiras sensíveis)
+db.exec(`
+CREATE TABLE IF NOT EXISTS auditoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER,
+  usuario_nome TEXT,
+  acao TEXT NOT NULL,          -- criar | editar | excluir | baixar | importar
+  entidade TEXT NOT NULL,      -- lancamento | conta | usuario | ...
+  entidade_id INTEGER,
+  detalhe TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_aud_entidade ON auditoria(entidade, entidade_id);
+`);
 
 module.exports = db;

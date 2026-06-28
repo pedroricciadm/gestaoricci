@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "inspect": "node scripts/inspect.js",
-    "dump": "node scripts/dump.js"
+    "dump": "node scripts/dump.js",
+    "backup": "node scripts/backup.js"
   },
   "keywords": [],
   "author": "",
