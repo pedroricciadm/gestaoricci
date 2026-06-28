@@ -218,6 +218,20 @@ async function viewConsolidado(ano) {
     ${kpi("Distribuição familiar", BRL(k.distribuicaoFamiliar), "retiradas (compulsória)", "info", false, "", `Retiradas da Família — distribuição compulsória que antecede o lucro.`)}
   </div>`));
 
+  const mf = d.mesesFechados;
+  if (mf && mf.parcial) {
+    view.append(el(`<div class="mfechados">
+      <div class="mf-tag">📅 Meses fechados · ${mf.rotulo}</div>
+      <div class="mf-nums">
+        <span>Faturamento <b>${BRL2(mf.faturamento)}</b></span>
+        <span>Custo <b>${BRL2(mf.custo)}</b></span>
+        <span>Resultado operacional <b class="${mf.resultadoOperacional >= 0 ? "pos" : "neg"}">${BRL2(mf.resultadoOperacional)}</b></span>
+        <span>Após família <b class="${mf.resultadoAposFamilia >= 0 ? "pos" : "neg"}">${BRL2(mf.resultadoAposFamilia)}</b></span>
+      </div>
+      <div class="sub">Compara receita e custo no <b>mesmo período</b>, excluindo o mês corrente em andamento. Os cartões acima somam o ano inteiro — em que o custo já corre meses à frente da receita lançada, fazendo o resultado parecer pior do que é.</div>
+    </div>`));
+  }
+
   const grid = el(`<div class="grid">
     <div class="card col-8"><h2>Faturamento × Custo × Resultado (mensal)</h2><div class="chart-box"><canvas id="cMensal"></canvas></div></div>
     <div class="card col-4"><h2>Faturamento por empresa</h2><div class="chart-box"><canvas id="cEmp"></canvas></div></div>

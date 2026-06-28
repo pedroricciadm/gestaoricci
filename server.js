@@ -582,11 +582,24 @@ app.get("/api/dashboard", (req, res) => {
   const familiaTot = fam ? fam.despesa : 0;
   const ant = serieMensal(ano - 1, null);
   const antFat = ant.entrada.reduce((a, b) => a + b, 0), antCusto = ant.saida.reduce((a, b) => a + b, 0);
+  // Meses fechados: exclui o mês corrente (em andamento) e meses futuros, p/ comparar receita e custo no mesmo período.
+  const hoje = new Date();
+  const ateMes = ano < hoje.getFullYear() ? 12 : ano > hoje.getFullYear() ? 0 : hoje.getMonth(); // getMonth() = mês corrente-1 (0-base) = nº de meses fechados
+  const famSerie = fam ? serieMensal(ano, fam.id) : { saida: Array(12).fill(0) };
+  const somaAte = (arr) => arr.slice(0, ateMes).reduce((s, v) => s + v, 0);
+  const mfFat = somaAte(sm.entrada), mfCusto = somaAte(sm.saida), mfFam = somaAte(famSerie.saida);
   res.json({
     ano, anos,
     kpis: {
       faturamento: fatTot, custo: custoTot, resultadoOperacional: fatTot - custoTot,
       distribuicaoFamiliar: familiaTot, resultadoAposFamilia: fatTot - custoTot - familiaTot,
+    },
+    mesesFechados: {
+      ateMes, // quantos meses fechados (0..12)
+      rotulo: ateMes > 0 ? `jan–${MESES[ateMes - 1].toLowerCase()}` : null,
+      parcial: ateMes > 0 && ateMes < 12,
+      faturamento: mfFat, custo: mfCusto, resultadoOperacional: mfFat - mfCusto,
+      distribuicaoFamiliar: mfFam, resultadoAposFamilia: mfFat - mfCusto - mfFam,
     },
     anterior: { ano: ano - 1, faturamento: antFat, custo: antCusto, resultadoOperacional: antFat - antCusto },
     serieMensal: { meses: MESES, entrada: sm.entrada, saida: sm.saida,
