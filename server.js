@@ -31,6 +31,15 @@ function exigirAdmin(req, res) {
   return true;
 }
 
+// Trilha de auditoria — registra ações financeiras sensíveis (nunca derruba a requisição em caso de erro)
+const _audStmt = db.prepare("INSERT INTO auditoria (usuario_id,usuario_nome,acao,entidade,entidade_id,detalhe) VALUES (?,?,?,?,?,?)");
+function audit(req, acao, entidade, entidadeId, detalhe) {
+  try {
+    const u = req && req.usuario;
+    _audStmt.run(u ? u.id : null, u ? u.nome : null, acao, entidade, entidadeId || null, detalhe || null);
+  } catch (_) { /* auditoria não deve quebrar a operação */ }
+}
+
 // garante seed na primeira execução
 if (db.prepare("SELECT COUNT(*) n FROM empresas").get().n === 0) {
   require("./seed");
@@ -42,11 +51,36 @@ app.use(express.json());
 /* ------------------------------------------------------------------ */
 /* Autenticação                                                        */
 /* ------------------------------------------------------------------ */
+// Rate-limit simples de login (anti brute-force), em memória, por IP+e-mail
+const LOGIN_MAX = 5, LOGIN_JANELA_MS = 15 * 60 * 1000;
+const loginTentativas = new Map();
+function loginKey(req, email) {
+  const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0].trim();
+  return ip + "|" + String(email || "").toLowerCase();
+}
+function registrarFalha(key) {
+  const e = loginTentativas.get(key) || { n: 0, ts: Date.now() };
+  if (Date.now() - e.ts > LOGIN_JANELA_MS) { e.n = 0; e.ts = Date.now(); }
+  e.n++; loginTentativas.set(key, e);
+}
+function bloqueado(key) {
+  const e = loginTentativas.get(key);
+  if (!e) return false;
+  if (Date.now() - e.ts > LOGIN_JANELA_MS) { loginTentativas.delete(key); return false; }
+  return e.n >= LOGIN_MAX;
+}
+
 app.post("/api/login", (req, res) => {
   const { email, senha } = req.body || {};
+  const key = loginKey(req, email);
+  if (bloqueado(key))
+    return res.status(429).json({ error: "Muitas tentativas. Aguarde 15 minutos e tente novamente." });
   const u = db.prepare("SELECT * FROM usuarios WHERE lower(email)=lower(?) AND ativo=1").get(email || "");
-  if (!u || !auth.verifySenha(senha || "", u.senha_hash))
+  if (!u || !auth.verifySenha(senha || "", u.senha_hash)) {
+    registrarFalha(key);
     return res.status(401).json({ error: "E-mail ou senha inválidos" });
+  }
+  loginTentativas.delete(key); // sucesso zera o contador
   const token = auth.criarSessao(u.id);
   const secure = req.headers["x-forwarded-proto"] === "https" ? " Secure;" : "";
   res.setHeader("Set-Cookie", `ricci_sess=${token}; HttpOnly; Path=/; SameSite=Lax;${secure} Max-Age=2592000`);
@@ -87,7 +121,7 @@ function serieMensal(ano, empresaId) {
     SELECT CAST(substr(l.data_competencia,6,2) AS INTEGER) mes, l.tipo, SUM(l.valor_liquido) total
     FROM lancamentos l
     JOIN empresas e ON e.id=l.empresa_id
-    WHERE 1=1 ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
+    WHERE l.deletado=0 ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
       ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1"}
     GROUP BY mes, l.tipo
   `).all({ ano: String(ano), empresaId });
@@ -107,7 +141,7 @@ function porEmpresa(ano) {
       SUM(CASE WHEN l.tipo='entrada' THEN l.valor_liquido ELSE 0 END) faturamento,
       SUM(CASE WHEN l.tipo='saida' THEN l.valor_liquido ELSE 0 END) despesa
     FROM empresas e
-    LEFT JOIN lancamentos l ON l.empresa_id=e.id ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
+    LEFT JOIN lancamentos l ON l.empresa_id=e.id AND l.deletado=0 ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
     WHERE e.tipo!='grupo'
     GROUP BY e.id
     ORDER BY e.ordem
@@ -124,14 +158,14 @@ function porCategoria(ano, tipo, empresaId) {
     FROM lancamentos l
     JOIN categorias c ON c.id=l.categoria_id
     JOIN empresas e ON e.id=l.empresa_id
-    WHERE l.tipo=@tipo ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
+    WHERE l.deletado=0 AND l.tipo=@tipo ${ano ? "AND substr(l.data_competencia,1,4)=@ano" : ""}
       ${empresaId ? "AND l.empresa_id=@empresaId" : "AND e.consolida=1"}
     GROUP BY c.id ORDER BY total DESC
   `).all({ ano: String(ano), tipo, empresaId }).map((r) => ({ nome: r.nome, total: num(r.total) }));
 }
 
 function anosDisponiveis() {
-  const rows = db.prepare(`SELECT DISTINCT substr(data_competencia,1,4) ano FROM lancamentos ORDER BY ano DESC`).all();
+  const rows = db.prepare(`SELECT DISTINCT substr(data_competencia,1,4) ano FROM lancamentos WHERE deletado=0 ORDER BY ano DESC`).all();
   return rows.map((r) => Number(r.ano)).filter(Boolean);
 }
 
@@ -192,7 +226,7 @@ app.post("/api/pessoas", (req, res) => {
 app.get("/api/lancamentos", (req, res) => {
   const { empresa_id, ano, mes, tipo, categoria_id, status, origem, q, limit } = req.query;
   if (empresa_id && !podeEmpresa(req, empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  const w = [], p = {};
+  const w = ["l.deletado=0"], p = {};
   if (!isAdmin(req) && !empresa_id) {
     const ids = empresasPermitidas(req.usuario.id);
     w.push(`l.empresa_id IN (${ids.length ? ids.map((x) => Number(x)).join(",") : "0"})`);
@@ -249,6 +283,7 @@ app.post("/api/lancamentos", (req, res) => {
      data_competencia,data_vencimento,data_pagamento,valor_bruto,desconto,taxa,valor_liquido,status,recorrente,observacoes,origem)
     VALUES (@empresa_id,@unidade_id,@conta_id,@pessoa_id,@categoria_id,@centro_custo_id,@conta_destino_id,@tipo,@descricao,
      @data_competencia,@data_vencimento,@data_pagamento,@valor_bruto,@desconto,@taxa,@valor_liquido,@status,@recorrente,@observacoes,'manual')`).run(d);
+  audit(req, "criar", "lancamento", r.lastInsertRowid, `${d.tipo} ${d.valor_liquido} ${d.data_competencia} ${d.descricao || ""}`.trim());
   res.json({ id: r.lastInsertRowid });
 });
 
@@ -262,13 +297,17 @@ app.put("/api/lancamentos/:id", (req, res) => {
     data_competencia=@data_competencia,data_vencimento=@data_vencimento,data_pagamento=@data_pagamento,
     valor_bruto=@valor_bruto,desconto=@desconto,taxa=@taxa,valor_liquido=@valor_liquido,status=@status,recorrente=@recorrente,
     observacoes=@observacoes,updated_at=datetime('now','localtime') WHERE id=@id`).run({ ...d, id: req.params.id });
+  audit(req, "editar", "lancamento", Number(req.params.id), `${d.tipo} ${d.valor_liquido} ${d.data_competencia} ${d.descricao || ""}`.trim());
   res.json({ ok: true });
 });
 
 app.delete("/api/lancamentos/:id", (req, res) => {
-  const atual = db.prepare("SELECT empresa_id FROM lancamentos WHERE id=?").get(req.params.id);
-  if (atual && !podeEmpresa(req, atual.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
-  db.prepare("DELETE FROM lancamentos WHERE id=?").run(req.params.id);
+  const atual = db.prepare("SELECT * FROM lancamentos WHERE id=?").get(req.params.id);
+  if (!atual) return res.status(404).json({ error: "lançamento não encontrado" });
+  if (!podeEmpresa(req, atual.empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
+  // Soft delete: preserva o histórico (recuperável), some das telas e dos totais
+  db.prepare("UPDATE lancamentos SET deletado=1, updated_at=datetime('now','localtime') WHERE id=?").run(req.params.id);
+  audit(req, "excluir", "lancamento", atual.id, `${atual.tipo} ${atual.valor_liquido} ${atual.data_competencia} ${atual.descricao || ""}`.trim());
   res.json({ ok: true });
 });
 
@@ -279,6 +318,7 @@ app.post("/api/lancamentos/:id/baixar", (req, res) => {
   db.prepare(`UPDATE lancamentos SET status=@status,
     data_pagamento=COALESCE(@dp, date('now','localtime')), updated_at=datetime('now','localtime')
     WHERE id=@id`).run({ status: req.body.status || "pago", dp: req.body.data_pagamento || null, id: req.params.id });
+  audit(req, "baixar", "lancamento", Number(req.params.id), req.body.status || "pago");
   res.json({ ok: true });
 });
 
@@ -308,7 +348,7 @@ app.post("/api/importar", (req, res) => {
     (empresa_id,unidade_id,categoria_id,tipo,descricao,data_competencia,data_vencimento,valor_liquido,valor_bruto,status,origem)
     VALUES (@empresa_id,@unidade_id,@categoria_id,@tipo,@descricao,@data_competencia,@data_vencimento,@valor,@valor,@status,'importacao-ui')`);
   const dupCheck = db.prepare(`SELECT COUNT(*) n FROM lancamentos
-    WHERE empresa_id=@empresa_id AND data_competencia=@data_competencia
+    WHERE empresa_id=@empresa_id AND data_competencia=@data_competencia AND deletado=0
       AND round(valor_liquido,2)=round(@valor,2) AND IFNULL(descricao,'')=IFNULL(@descricao,'')`);
 
   let inserted = 0, skipped = 0; const errors = [];
@@ -332,6 +372,7 @@ app.post("/api/importar", (req, res) => {
     });
   });
   tx();
+  audit(req, "importar", "lancamento", null, `inseridos=${inserted} pulados=${skipped} erros=${errors.length}`);
   res.json({ inserted, skipped, totalErros: errors.length, errors: errors.slice(0, 50) });
 });
 
@@ -383,7 +424,7 @@ app.post("/api/recorrencias/gerar", (req, res) => {
   if (!podeEmpresa(req, empresa_id)) return res.status(403).json({ error: "Sem acesso a esta empresa." });
   const mm = String(mes).padStart(2, "0"), ym = `${ano}-${mm}`;
   const recs = db.prepare("SELECT * FROM recorrencias WHERE ativa=1 AND empresa_id=?").all(empresa_id);
-  const jaExiste = db.prepare("SELECT COUNT(*) n FROM lancamentos WHERE recorrencia_id=@rid AND substr(data_competencia,1,7)=@ym");
+  const jaExiste = db.prepare("SELECT COUNT(*) n FROM lancamentos WHERE recorrencia_id=@rid AND substr(data_competencia,1,7)=@ym AND deletado=0");
   const ins = db.prepare(`INSERT INTO lancamentos (empresa_id,unidade_id,conta_id,categoria_id,centro_custo_id,pessoa_id,tipo,descricao,data_competencia,data_vencimento,valor_liquido,valor_bruto,status,origem,recorrencia_id)
     VALUES (@empresa_id,@unidade_id,@conta_id,@categoria_id,@centro_custo_id,@pessoa_id,@tipo,@descricao,@data,@data,@valor,@valor,'pendente','recorrente',@rid)`);
   let gerados = 0, pulados = 0;
@@ -413,11 +454,11 @@ app.get("/api/contas/saldos", (req, res) => {
   res.json(db.prepare(`
     SELECT c.id, c.nome, c.banco, c.tipo, c.empresa_id, e.nome empresa_nome, c.saldo_inicial,
       c.saldo_inicial
-      + COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='entrada'),0)
-      - COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='saida'),0)
-      + COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_destino_id=c.id AND tipo='transferencia'),0)
-      - COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='transferencia'),0) AS saldo,
-      (SELECT COUNT(*) FROM lancamentos WHERE conta_id=c.id OR conta_destino_id=c.id) movimentos
+      + COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='entrada' AND deletado=0),0)
+      - COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='saida' AND deletado=0),0)
+      + COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_destino_id=c.id AND tipo='transferencia' AND deletado=0),0)
+      - COALESCE((SELECT SUM(valor_liquido) FROM lancamentos WHERE conta_id=c.id AND tipo='transferencia' AND deletado=0),0) AS saldo,
+      (SELECT COUNT(*) FROM lancamentos WHERE (conta_id=c.id OR conta_destino_id=c.id) AND deletado=0) movimentos
     FROM contas_financeiras c LEFT JOIN empresas e ON e.id=c.empresa_id
     WHERE c.ativa=1 AND (@emp IS NULL OR c.empresa_id=@emp) ORDER BY e.ordem, c.nome`).all({ emp }));
 });
@@ -430,7 +471,7 @@ app.get("/api/contas/:id/extrato", (req, res) => {
            WHEN l.conta_id=@id AND l.tipo='transferencia' THEN 'saida_transf'
            ELSE l.tipo END mov
     FROM lancamentos l JOIN empresas e ON e.id=l.empresa_id LEFT JOIN categorias c ON c.id=l.categoria_id
-    WHERE l.conta_id=@id OR l.conta_destino_id=@id
+    WHERE (l.conta_id=@id OR l.conta_destino_id=@id) AND l.deletado=0
     ORDER BY l.data_competencia DESC, l.id DESC LIMIT 300`).all({ id: req.params.id }));
 });
 app.post("/api/contas", (req, res) => {
@@ -575,7 +616,7 @@ app.get("/api/empresa/:id/dashboard", (req, res) => {
       SUM(CASE WHEN l.tipo='entrada' THEN l.valor_liquido ELSE 0 END) faturamento,
       SUM(CASE WHEN l.tipo='saida' THEN l.valor_liquido ELSE 0 END) despesa
     FROM lancamentos l LEFT JOIN unidades u ON u.id=l.unidade_id
-    WHERE l.empresa_id=@id AND substr(l.data_competencia,1,4)=@ano
+    WHERE l.empresa_id=@id AND l.deletado=0 AND substr(l.data_competencia,1,4)=@ano
     GROUP BY u.id ORDER BY faturamento DESC
   `).all({ id, ano: String(ano) }).map((r) => ({ nome: r.nome, faturamento: num(r.faturamento), despesa: num(r.despesa) }));
   res.json({
@@ -592,7 +633,14 @@ app.get("/api/empresa/:id/dashboard", (req, res) => {
   });
 });
 
-app.get("/api/health", (req, res) => res.json({ ok: true, empresas: db.prepare("SELECT COUNT(*) n FROM empresas").get().n, lancamentos: db.prepare("SELECT COUNT(*) n FROM lancamentos").get().n }));
+app.get("/api/health", (req, res) => res.json({ ok: true, empresas: db.prepare("SELECT COUNT(*) n FROM empresas").get().n, lancamentos: db.prepare("SELECT COUNT(*) n FROM lancamentos WHERE deletado=0").get().n }));
+
+// Trilha de auditoria (admin) — últimas ações financeiras registradas
+app.get("/api/auditoria", (req, res) => {
+  if (!exigirAdmin(req, res)) return;
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  res.json(db.prepare("SELECT * FROM auditoria ORDER BY id DESC LIMIT ?").all(limit));
+});
 
 // fallback SPA (Express 5: usar middleware, não "*")
 app.use((req, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
