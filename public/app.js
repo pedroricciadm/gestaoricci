@@ -114,7 +114,7 @@ function renderNav() {
     const subs = SECOES.map((s) => `<a href="#/empresa/${e.id}/${s[0]}" data-route="empresa/${e.id}/${s[0]}">${s[2]} ${s[1]}</a>`).join("");
     return `<div class="nav-emp">
       <div class="nav-emp-head ${open ? "open" : ""}" data-emp="${e.id}"><span class="dot" style="background:${e.cor || "#888"}"></span><span class="nm">${e.nome}</span><span class="caret">${open ? "▾" : "▸"}</span></div>
-      <div class="nav-emp-sub" data-sub="${e.id}" style="display:${open ? "block" : "none"}">${subs}</div>
+      <div class="nav-emp-sub" data-sub="${e.id}">${subs}</div>
     </div>`;
   }).join("");
   const admin = isAdminUI();
@@ -132,15 +132,15 @@ function renderNav() {
   `;
   document.querySelectorAll(".nav-emp-head").forEach((hd) => hd.addEventListener("click", () => {
     const sub = document.querySelector(`[data-sub="${hd.dataset.emp}"]`);
-    const vis = sub.style.display !== "none";
-    // accordion exclusivo: fecha todos os grupos antes de abrir o clicado
-    document.querySelectorAll(".nav-emp-sub").forEach((s) => (s.style.display = "none"));
+    const isOpen = sub.classList.contains("open");
+    // accordion exclusivo: fecha todos os grupos antes de abrir o clicado (anima via CSS)
+    document.querySelectorAll(".nav-emp-sub").forEach((s) => s.classList.remove("open"));
     document.querySelectorAll(".nav-emp-head").forEach((h) => {
       h.classList.remove("open");
       const c = h.querySelector(".caret"); if (c) c.textContent = "▸";
     });
-    if (!vis) { // estava fechado → abre só este; se estava aberto, permanece fechado (toggle)
-      sub.style.display = "block";
+    if (!isOpen) { // estava fechado → abre só este; se estava aberto, permanece fechado (toggle)
+      sub.classList.add("open");
       hd.classList.add("open");
       hd.querySelector(".caret").textContent = "▾";
     }
