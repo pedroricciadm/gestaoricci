@@ -109,10 +109,8 @@ const SECOES = [
 const isAdminUI = () => STATE.usuario && STATE.usuario.perfil === "admin";
 
 function renderNav() {
-  const h = location.hash.replace(/^#\//, "");
-  const activeEmp = h.startsWith("empresa/") ? h.split("/")[1] : null;
   const empresasHtml = STATE.empresas.filter((e) => e.tipo !== "grupo").map((e) => {
-    const open = String(e.id) === activeEmp;
+    const open = false; // todos os grupos começam fechados (inclusive o da página atual)
     const subs = SECOES.map((s) => `<a href="#/empresa/${e.id}/${s[0]}" data-route="empresa/${e.id}/${s[0]}">${s[2]} ${s[1]}</a>`).join("");
     return `<div class="nav-emp">
       <div class="nav-emp-head ${open ? "open" : ""}" data-emp="${e.id}"><span class="dot" style="background:${e.cor || "#888"}"></span><span class="nm">${e.nome}</span><span class="caret">${open ? "▾" : "▸"}</span></div>
@@ -135,8 +133,17 @@ function renderNav() {
   document.querySelectorAll(".nav-emp-head").forEach((hd) => hd.addEventListener("click", () => {
     const sub = document.querySelector(`[data-sub="${hd.dataset.emp}"]`);
     const vis = sub.style.display !== "none";
-    sub.style.display = vis ? "none" : "block";
-    hd.querySelector(".caret").textContent = vis ? "▸" : "▾";
+    // accordion exclusivo: fecha todos os grupos antes de abrir o clicado
+    document.querySelectorAll(".nav-emp-sub").forEach((s) => (s.style.display = "none"));
+    document.querySelectorAll(".nav-emp-head").forEach((h) => {
+      h.classList.remove("open");
+      const c = h.querySelector(".caret"); if (c) c.textContent = "▸";
+    });
+    if (!vis) { // estava fechado → abre só este; se estava aberto, permanece fechado (toggle)
+      sub.style.display = "block";
+      hd.classList.add("open");
+      hd.querySelector(".caret").textContent = "▾";
+    }
   }));
   const lo = document.getElementById("navLogout");
   if (lo) lo.addEventListener("click", (e) => { e.preventDefault(); logout(); });
